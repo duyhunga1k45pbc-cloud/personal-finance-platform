@@ -1,0 +1,42 @@
+============================= test session starts ==============================
+platform linux -- Python 3.14.4, pytest-9.1.1, pluggy-1.6.0 -- /home/archlichbarkhan/personal-finance-platform/backend/venv/bin/python3
+cachedir: .pytest_cache
+rootdir: /home/archlichbarkhan/personal-finance-platform/backend
+plugins: anyio-4.14.1
+collecting ... collected 0 items / 1 error
+
+==================================== ERRORS ====================================
+_________________ ERROR collecting tests/test_transactions.py __________________
+ImportError while importing test module '/home/archlichbarkhan/personal-finance-platform/backend/tests/test_transactions.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+venv/lib/python3.14/site-packages/_pytest/python.py:508: in importtestmodule
+    mod = import_path(
+venv/lib/python3.14/site-packages/_pytest/pathlib.py:596: in import_path
+    importlib.import_module(module_name)
+/usr/lib/python3.14/importlib/__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+<frozen importlib._bootstrap>:1406: in _gcd_import
+    ???
+<frozen importlib._bootstrap>:1371: in _find_and_load
+    ???
+<frozen importlib._bootstrap>:1342: in _find_and_load_unlocked
+    ???
+<frozen importlib._bootstrap>:938: in _load_unlocked
+    ???
+venv/lib/python3.14/site-packages/_pytest/assertion/rewrite.py:188: in exec_module
+    exec(co, module.__dict__)
+tests/test_transactions.py:2: in <module>
+    from app.main import app
+E   ModuleNotFoundError: No module named 'app'
+=============================== warnings summary ===============================
+venv/lib/python3.14/site-packages/fastapi/testclient.py:1
+  /home/archlichbarkhan/personal-finance-platform/backend/venv/lib/python3.14/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+ERROR tests/test_transactions.py
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+========================= 1 warning, 1 error in 0.23s ==========================
