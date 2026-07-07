@@ -1,0 +1,15 @@
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+.git/
+.env
+.env.*
+
+old_main.py
+old_database.py
+pytest_error.txt
+
+.DS_Store
+Thumbs.db

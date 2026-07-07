@@ -8,7 +8,7 @@ from app.routers import transactions, auth
 from app.models import Transaction, User
 from app.routers.auth import get_current_user
 
-Base.metadata.create_all(bind=engine)
+#Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
     title="Personal Finance API",
