@@ -435,3 +435,8 @@ Rollback one migration:
 ```bash
 alembic downgrade -1
 ```
+## Live Demo
+
+Swagger API docs:
+
+https://personal-finance-platform-fbkb.onrender.com/docs
