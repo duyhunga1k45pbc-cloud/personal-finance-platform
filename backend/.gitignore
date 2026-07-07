@@ -1,0 +1,21 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Environment
+.env
+
+# Old / temp files
+old_main.py
+old_database.py
+pytest_error.txt
+
+
+# OS
+.DS_Store
+Thumbs.db
+EOF
