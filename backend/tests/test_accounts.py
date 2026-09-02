@@ -26,7 +26,14 @@ def create_user():
     assert login.status_code == 200
 
     token = login.json()["access_token"]
-    return {"Authorization": f"Bearer {token}"}
+    headers = {"Authorization": f"Bearer {token}"}
+    return headers
+
+
+def command_headers(headers):
+    result = dict(headers)
+    result["Idempotency-Key"] = uuid4().hex
+    return result
 
 
 def test_registration_creates_one_default_vnd_cash_account():
@@ -56,6 +63,7 @@ def test_v1_rejects_non_vnd_account():
         },
         headers=headers,
     )
+
     assert response.status_code == 422
 
 
@@ -65,12 +73,17 @@ def test_user_cannot_read_another_users_account():
 
     created = client.post(
         "/accounts",
-        json={"name": "VCB", "account_type": "BANK", "currency": "VND"},
+        json={
+            "name": "VCB",
+            "account_type": "BANK",
+            "currency": "VND",
+        },
         headers=user_a,
     )
     assert created.status_code == 200
+    account_id = created.json()["id"]
 
-    response = client.get(f"/accounts/{created.json()['id']}", headers=user_b)
+    response = client.get(f"/accounts/{account_id}", headers=user_b)
     assert response.status_code == 404
 
 
@@ -80,10 +93,15 @@ def test_user_cannot_create_transaction_on_another_users_account():
 
     created = client.post(
         "/accounts",
-        json={"name": "MoMo", "account_type": "EWALLET", "currency": "VND"},
+        json={
+            "name": "MoMo",
+            "account_type": "EWALLET",
+            "currency": "VND",
+        },
         headers=user_a,
     )
     assert created.status_code == 200
+    account_id = created.json()["id"]
 
     response = client.post(
         "/transactions",
@@ -92,18 +110,23 @@ def test_user_cannot_create_transaction_on_another_users_account():
             "description": "ownership attack",
             "category": "test",
             "type": "expense",
-            "account_id": created.json()["id"],
+            "account_id": account_id,
         },
-        headers=user_b,
+        headers=command_headers(user_b),
     )
+
     assert response.status_code == 404
 
 
 def test_transaction_without_account_uses_users_default_cash():
     headers = create_user()
 
-    accounts = client.get("/accounts", headers=headers).json()
-    default_account = next(account for account in accounts if account["is_default"])
+    accounts_response = client.get("/accounts", headers=headers)
+    default_account = next(
+        account
+        for account in accounts_response.json()
+        if account["is_default"]
+    )
 
     transaction = client.post(
         "/transactions",
@@ -113,7 +136,7 @@ def test_transaction_without_account_uses_users_default_cash():
             "category": "food",
             "type": "expense",
         },
-        headers=headers,
+        headers=command_headers(headers),
     )
 
     assert transaction.status_code == 200

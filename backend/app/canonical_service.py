@@ -315,3 +315,187 @@ def canonical_summary(db: Session, user_id: int) -> FinancialSummary:
         total_expense=expense,
         balance=income - expense,
     )
+
+
+class ConcurrentModificationError(RuntimeError):
+    def __init__(self, *, expected_version: int, current_version: int | None):
+        self.expected_version = expected_version
+        self.current_version = current_version
+        super().__init__(
+            f"Stale financial event version: expected {expected_version}, "
+            f"current {current_version}"
+        )
+
+
+def _claim_expected_version(
+    db: Session,
+    event: FinancialEvent,
+    *,
+    expected_version: int,
+) -> None:
+    """Atomically verify the expected version and serialize the mutation.
+
+    The no-op UPDATE is intentional. PostgreSQL rechecks the version predicate
+    after waiting on a concurrent writer, so only one writer can claim a given
+    version. A stale writer gets rowcount=0 instead of silently overwriting a
+    newer state.
+    """
+
+    claimed = (
+        db.query(FinancialEvent)
+        .filter(
+            FinancialEvent.id == event.id,
+            FinancialEvent.lifecycle_state == "ACTIVE",
+            FinancialEvent.version == expected_version,
+        )
+        .update(
+            {FinancialEvent.version: FinancialEvent.version},
+            synchronize_session=False,
+        )
+    )
+    if claimed == 1:
+        db.refresh(event)
+        return
+
+    current_version = (
+        db.query(FinancialEvent.version)
+        .filter(FinancialEvent.id == event.id)
+        .scalar()
+    )
+    raise ConcurrentModificationError(
+        expected_version=expected_version,
+        current_version=current_version,
+    )
+
+
+def correct_legacy_transaction_with_expected_version(
+    db: Session,
+    transaction: Transaction,
+    *,
+    amount: Decimal,
+    description: str,
+    category: str,
+    transaction_type: str,
+    account_id: int,
+    expected_version: int,
+    actor_type: str = "USER",
+    actor_user_id: int | None = None,
+    reason: str | None = None,
+) -> FinancialEvent:
+    if expected_version < 1:
+        raise ValueError("Expected version must be positive")
+    if amount <= 0:
+        raise ValueError("Transaction amount must be positive")
+    if transaction_type not in {"income", "expense"}:
+        raise ValueError("Unsupported transaction type")
+
+    account = (
+        db.query(FinancialAccount)
+        .filter(FinancialAccount.id == account_id)
+        .one_or_none()
+    )
+    if account is None or account.user_id != transaction.user_id:
+        raise ValueError("Transaction owner does not match account owner")
+
+    event = (
+        db.query(FinancialEvent)
+        .filter(FinancialEvent.legacy_transaction_id == transaction.id)
+        .one_or_none()
+    )
+    if event is None:
+        raise ValueError("Canonical event does not exist")
+    if event.user_id != transaction.user_id:
+        raise ValueError("Canonical event owner diverged from legacy owner")
+
+    _claim_expected_version(db, event, expected_version=expected_version)
+
+    entries = (
+        db.query(FinancialEventEntry)
+        .filter(FinancialEventEntry.financial_event_id == event.id)
+        .all()
+    )
+    if len(entries) != 1:
+        raise ValueError(
+            "Legacy compatibility event must contain exactly one canonical entry"
+        )
+    entry = entries[0]
+
+    signed_amount = amount if transaction_type == "income" else -amount
+    unchanged = (
+        event.event_type == transaction_type.upper()
+        and event.description == description
+        and event.category == category
+        and entry.account_id == account_id
+        and Decimal(entry.amount) == signed_amount
+    )
+    if unchanged:
+        return event
+
+    previous_state = snapshot_financial_event(db, event)
+
+    transaction.amount = amount
+    transaction.description = description
+    transaction.category = category
+    transaction.type = transaction_type
+    transaction.account_id = account_id
+
+    event.event_type = transaction_type.upper()
+    event.description = description
+    event.category = category
+    event.occurred_at = transaction.date
+    event.effective_at = transaction.date
+    entry.account_id = account_id
+    entry.amount = signed_amount
+    event.version = expected_version + 1
+
+    db.flush()
+    append_financial_event_history(
+        db,
+        event,
+        transition_type="CORRECTED",
+        actor_type=actor_type,
+        actor_user_id=actor_user_id,
+        previous_state=previous_state,
+        new_state=snapshot_financial_event(db, event),
+        reason=reason,
+    )
+    return event
+
+
+def void_canonical_with_expected_version(
+    db: Session,
+    legacy_transaction_id: int,
+    *,
+    expected_version: int,
+    actor_type: str = "USER",
+    actor_user_id: int | None = None,
+    reason: str | None = None,
+) -> FinancialEvent:
+    if expected_version < 1:
+        raise ValueError("Expected version must be positive")
+
+    event = (
+        db.query(FinancialEvent)
+        .filter(FinancialEvent.legacy_transaction_id == legacy_transaction_id)
+        .one_or_none()
+    )
+    if event is None:
+        raise ValueError("Canonical event does not exist")
+
+    _claim_expected_version(db, event, expected_version=expected_version)
+
+    previous_state = snapshot_financial_event(db, event)
+    event.lifecycle_state = "VOIDED"
+    event.version = expected_version + 1
+    db.flush()
+    append_financial_event_history(
+        db,
+        event,
+        transition_type="VOIDED",
+        actor_type=actor_type,
+        actor_user_id=actor_user_id,
+        previous_state=previous_state,
+        new_state=snapshot_financial_event(db, event),
+        reason=reason,
+    )
+    return event

@@ -3,14 +3,11 @@ from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
-from app.main import app
 from app.database import Base, SessionLocal, engine
+from app.main import app
 from app.models import Transaction
 
-
 client = TestClient(app)
-
-
 Base.metadata.create_all(bind=engine)
 
 
@@ -18,33 +15,25 @@ def get_auth_headers():
     email = f"test_{uuid4().hex}@example.com"
     password = "testpassword123"
 
-    client.post(
-        "/auth/register",
-        json={
-            "email": email,
-            "password": password,
-        },
-    )
+    client.post("/auth/register", json={"email": email, "password": password})
     login_response = client.post(
         "/auth/login",
-        json={
-            "email": email,
-            "password": password,
-        },
+        json={"email": email, "password": password},
     )
-
     assert login_response.status_code == 200
 
     token = login_response.json()["access_token"]
+    return {"Authorization": f"Bearer {token}"}
 
-    return {
-        "Authorization": f"Bearer {token}"
-    }
+
+def command_headers(headers):
+    result = dict(headers)
+    result["Idempotency-Key"] = uuid4().hex
+    return result
 
 
 def test_transactions_requires_auth():
     response = client.get("/transactions")
-
     assert response.status_code == 401
 
 
@@ -58,11 +47,10 @@ def test_create_transaction():
             "category": "food",
             "type": "expense",
         },
-        headers=headers,
+        headers=command_headers(headers),
     )
 
     assert response.status_code == 200
-
     data = response.json()
     assert data["amount"] == 50000
     assert data["description"] == "test lunch"
@@ -81,7 +69,7 @@ def test_amount_is_stored_as_decimal_numeric():
             "category": "test",
             "type": "expense",
         },
-        headers=headers,
+        headers=command_headers(headers),
     )
     assert response.status_code == 200
 
@@ -97,7 +85,6 @@ def test_amount_is_stored_as_decimal_numeric():
 
 def test_create_transaction_with_invalid_amount():
     headers = get_auth_headers()
-
     response = client.post(
         "/transactions",
         json={
@@ -106,9 +93,8 @@ def test_create_transaction_with_invalid_amount():
             "category": "food",
             "type": "expense",
         },
-        headers=headers,
+        headers=command_headers(headers),
     )
-
     assert response.status_code == 422
 
 
@@ -122,7 +108,6 @@ def test_create_transaction_with_invalid_type():
             "category": "food",
             "type": "abc",
         },
-        headers=headers,
+        headers=command_headers(headers),
     )
-
     assert response.status_code == 422

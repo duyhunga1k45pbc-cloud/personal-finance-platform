@@ -39,6 +39,14 @@ def create_user():
     return register.json()["id"], {"Authorization": f"Bearer {token}"}
 
 
+def command_headers(headers, *, expected_version=None, idempotency_key=None):
+    result = dict(headers)
+    result["Idempotency-Key"] = idempotency_key or uuid4().hex
+    if expected_version is not None:
+        result["X-Expected-Version"] = str(expected_version)
+    return result
+
+
 def test_create_transaction_dual_writes_canonical_event_and_signed_entry():
     user_id, headers = create_user()
 
@@ -50,7 +58,7 @@ def test_create_transaction_dual_writes_canonical_event_and_signed_entry():
             "category": "income",
             "type": "income",
         },
-        headers=headers,
+        headers=command_headers(headers),
     )
     assert response.status_code == 200
     transaction_id = response.json()["id"]
@@ -93,7 +101,7 @@ def test_expense_entry_is_negative():
             "category": "food",
             "type": "expense",
         },
-        headers=headers,
+        headers=command_headers(headers),
     )
     assert response.status_code == 200
     transaction_id = response.json()["id"]
@@ -126,7 +134,7 @@ def test_create_appends_created_history():
             "category": "food",
             "type": "expense",
         },
-        headers=headers,
+        headers=command_headers(headers),
     )
     transaction_id = created.json()["id"]
 
@@ -165,7 +173,7 @@ def test_update_transaction_appends_correction_without_destroying_history():
             "category": "misc",
             "type": "expense",
         },
-        headers=headers,
+        headers=command_headers(headers),
     )
     transaction_id = created.json()["id"]
 
@@ -177,7 +185,9 @@ def test_update_transaction_appends_correction_without_destroying_history():
             "category": "salary",
             "type": "income",
         },
-        headers=headers,
+        headers=command_headers(
+            headers, expected_version=created.json()["canonical_version"]
+        ),
     )
     assert updated.status_code == 200
 
@@ -221,10 +231,16 @@ def test_idempotent_update_does_not_create_fake_history_version():
         "category": "misc",
         "type": "expense",
     }
-    created = client.post("/transactions", json=payload, headers=headers)
+    created = client.post("/transactions", json=payload, headers=command_headers(headers))
     transaction_id = created.json()["id"]
 
-    updated = client.put(f"/transactions/{transaction_id}", json=payload, headers=headers)
+    updated = client.put(
+        f"/transactions/{transaction_id}",
+        json=payload,
+        headers=command_headers(
+            headers, expected_version=created.json()["canonical_version"]
+        ),
+    )
     assert updated.status_code == 200
 
     db = SessionLocal()
@@ -256,11 +272,16 @@ def test_delete_voids_event_and_preserves_evidence_and_history():
             "category": "misc",
             "type": "expense",
         },
-        headers=headers,
+        headers=command_headers(headers),
     )
     transaction_id = created.json()["id"]
 
-    deleted = client.delete(f"/transactions/{transaction_id}", headers=headers)
+    deleted = client.delete(
+        f"/transactions/{transaction_id}",
+        headers=command_headers(
+            headers, expected_version=created.json()["canonical_version"]
+        ),
+    )
     assert deleted.status_code == 200
     assert client.get(f"/transactions/{transaction_id}", headers=headers).status_code == 404
 
@@ -303,10 +324,15 @@ def test_history_endpoint_remains_available_after_void():
             "category": "misc",
             "type": "expense",
         },
-        headers=headers,
+        headers=command_headers(headers),
     )
     transaction_id = created.json()["id"]
-    client.delete(f"/transactions/{transaction_id}", headers=headers)
+    client.delete(
+        f"/transactions/{transaction_id}",
+        headers=command_headers(
+            headers, expected_version=created.json()["canonical_version"]
+        ),
+    )
 
     response = client.get(f"/transactions/{transaction_id}/history", headers=headers)
     assert response.status_code == 200
@@ -336,7 +362,7 @@ def test_legacy_and_canonical_summaries_are_equal():
             "type": "expense",
         },
     ]:
-        response = client.post("/transactions", json=payload, headers=headers)
+        response = client.post("/transactions", json=payload, headers=command_headers(headers))
         assert response.status_code == 200
 
     db = SessionLocal()
@@ -363,7 +389,7 @@ def test_audit_reports_first_divergence_without_polluting_test_database():
             "category": "food",
             "type": "expense",
         },
-        headers=headers,
+        headers=command_headers(headers),
     )
     transaction_id = response.json()["id"]
 
@@ -401,7 +427,7 @@ def test_audit_detects_current_state_changed_without_history():
             "category": "food",
             "type": "expense",
         },
-        headers=headers,
+        headers=command_headers(headers),
     )
     transaction_id = response.json()["id"]
 
@@ -436,7 +462,7 @@ def test_history_table_is_append_only_in_postgresql():
             "category": "test",
             "type": "expense",
         },
-        headers=headers,
+        headers=command_headers(headers),
     )
     transaction_id = created.json()["id"]
 

@@ -239,3 +239,43 @@ class FinancialEventHistory(Base):
         nullable=False,
         default=lambda: datetime.datetime.now(datetime.timezone.utc),
     )
+
+class CommandReceipt(Base):
+    __tablename__ = "command_receipts"
+    __table_args__ = (
+        CheckConstraint(
+            "command_type IN ('CREATE_TRANSACTION', 'UPDATE_TRANSACTION', 'DELETE_TRANSACTION')",
+            name="ck_command_receipts_command_type",
+        ),
+        UniqueConstraint(
+            "user_id",
+            "command_type",
+            "idempotency_key",
+            name="uq_command_receipts_user_command_key",
+        ),
+        Index(
+            "ix_command_receipts_user_created",
+            "user_id",
+            "created_at",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    command_type = Column(String, nullable=False)
+    idempotency_key = Column(String(128), nullable=False)
+    request_hash = Column(String(64), nullable=False)
+    transaction_id = Column(
+        Integer,
+        ForeignKey("transactions.id"),
+        nullable=False,
+        index=True,
+    )
+    response_status = Column(Integer, nullable=False)
+    response_body = Column(JSON, nullable=False)
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.datetime.now(datetime.timezone.utc),
+    )
+
