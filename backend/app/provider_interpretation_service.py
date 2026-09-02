@@ -9,6 +9,12 @@ from sqlalchemy.orm import Session
 
 from app.canonical_service import append_financial_event_history, snapshot_financial_event
 from app.credit_card_service import validate_transaction_account_semantics
+from app.provider_lifecycle_service import (
+    LifecycleObservationResult,
+    ProviderLifecycleError,
+    observe_provider_lifecycle,
+    sync_provider_lifecycle_canonical_link,
+)
 from app.models import (
     ExternalTransaction,
     ExternalTransactionEvidence,
@@ -38,6 +44,42 @@ class NormalizeResult:
     interpretation: ProviderTransactionInterpretation
     candidate_created: bool
     interpretation_locked: bool
+    lifecycle_ignored_stale: bool = False
+
+
+def _observe_lifecycle(
+    db: Session,
+    *,
+    user_id: int,
+    candidate: ProviderNormalizedCandidate,
+    interp: ProviderTransactionInterpretation,
+) -> LifecycleObservationResult:
+    try:
+        return observe_provider_lifecycle(
+            db,
+            user_id=user_id,
+            candidate=candidate,
+            interpretation=interp,
+        )
+    except ProviderLifecycleError as exc:
+        raise ProviderInterpretationError(str(exc)) from exc
+
+
+def _sync_lifecycle_canonical_link(
+    db: Session,
+    *,
+    user_id: int,
+    interp: ProviderTransactionInterpretation,
+) -> None:
+    try:
+        sync_provider_lifecycle_canonical_link(
+            db,
+            user_id=user_id,
+            interpretation=interp,
+            source_candidate_id=interp.normalized_candidate_id,
+        )
+    except ProviderLifecycleError as exc:
+        raise ProviderInterpretationError(str(exc)) from exc
 
 
 def _utc(value: datetime.datetime) -> datetime.datetime:
@@ -95,6 +137,7 @@ def _owned_transaction(db: Session, *, user_id: int, transaction_record_id: int)
             ExternalTransaction.id == transaction_record_id,
             ExternalTransaction.user_id == user_id,
         )
+        .with_for_update()
         .one_or_none()
     )
     if transaction is None:
@@ -334,13 +377,33 @@ def normalize_external_transaction(
             previous_state=None,
             reason="Initial normalization from immutable provider evidence",
         )
+        _observe_lifecycle(db, user_id=user_id, candidate=candidate, interp=interp)
         return NormalizeResult(candidate, interp, candidate_created, False)
 
     if interp.user_id != user_id:
         raise ProviderInterpretationError("Provider interpretation owner mismatch")
+
+    lifecycle_observation = _observe_lifecycle(
+        db,
+        user_id=user_id,
+        candidate=candidate,
+        interp=interp,
+    )
+    if lifecycle_observation.ignored_stale:
+        # Preserve the normalized candidate as derived evidence, but do not let an
+        # older provider observation rebase current semantic interpretation/state.
+        return NormalizeResult(
+            candidate,
+            interp,
+            candidate_created,
+            interp.state == "USER_CONFIRMED",
+            lifecycle_ignored_stale=True,
+        )
+
     if interp.canonical_event_id is not None:
         # New evidence is preserved, but already-materialized user-confirmed semantics
-        # are never silently rebased or rewritten.
+        # are never silently rebased or rewritten. The independent source lifecycle
+        # has already advanced above and may have materialized a causal REVERSAL_OF event.
         return NormalizeResult(candidate, interp, candidate_created, True)
     if interp.normalized_candidate_id == candidate.id:
         return NormalizeResult(candidate, interp, candidate_created, interp.state == "USER_CONFIRMED")
@@ -378,6 +441,7 @@ def normalize_external_transaction(
         previous_state=previous,
         reason="Normalized candidate changed from newer immutable evidence",
     )
+    _observe_lifecycle(db, user_id=user_id, candidate=candidate, interp=interp)
     return NormalizeResult(candidate, interp, candidate_created, False)
 
 
@@ -531,4 +595,6 @@ def confirm_external_interpretation(
         previous_state=previous,
         reason=reason,
     )
+    if interp.canonical_event_id is not None:
+        _sync_lifecycle_canonical_link(db, user_id=user_id, interp=interp)
     return interp

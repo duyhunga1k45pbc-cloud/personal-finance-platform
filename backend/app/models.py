@@ -586,6 +586,133 @@ class ProviderInterpretationHistory(Base):
     recorded_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc))
 
 
+class ProviderTransactionLifecycle(Base):
+    __tablename__ = "provider_transaction_lifecycles"
+    __table_args__ = (
+        CheckConstraint(
+            "current_status IN ('PENDING', 'POSTED', 'REVERSED')",
+            name="ck_provider_transaction_lifecycles_status",
+        ),
+        CheckConstraint(
+            "version >= 1",
+            name="ck_provider_transaction_lifecycles_version_positive",
+        ),
+        CheckConstraint(
+            "(current_status = 'PENDING' AND posted_candidate_id IS NULL AND reversed_candidate_id IS NULL AND canonical_event_id IS NULL AND reversal_event_id IS NULL) OR "
+            "(current_status = 'POSTED' AND posted_candidate_id IS NOT NULL AND reversed_candidate_id IS NULL AND reversal_event_id IS NULL) OR "
+            "(current_status = 'REVERSED' AND reversed_candidate_id IS NOT NULL AND ((canonical_event_id IS NULL AND reversal_event_id IS NULL) OR (canonical_event_id IS NOT NULL AND reversal_event_id IS NOT NULL)))",
+            name="ck_provider_transaction_lifecycles_state_shape",
+        ),
+        UniqueConstraint(
+            "external_transaction_record_id",
+            name="uq_provider_transaction_lifecycles_external_transaction",
+        ),
+        UniqueConstraint(
+            "canonical_event_id",
+            name="uq_provider_transaction_lifecycles_canonical_event",
+        ),
+        UniqueConstraint(
+            "reversal_event_id",
+            name="uq_provider_transaction_lifecycles_reversal_event",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    external_transaction_record_id = Column(
+        Integer,
+        ForeignKey("external_transactions.id"),
+        nullable=False,
+        index=True,
+    )
+    current_status = Column(String(16), nullable=False)
+    current_candidate_id = Column(
+        Integer,
+        ForeignKey("provider_normalized_candidates.id"),
+        nullable=False,
+        index=True,
+    )
+    current_observed_at = Column(DateTime(timezone=True), nullable=False)
+    posted_candidate_id = Column(
+        Integer,
+        ForeignKey("provider_normalized_candidates.id"),
+        nullable=True,
+        index=True,
+    )
+    reversed_candidate_id = Column(
+        Integer,
+        ForeignKey("provider_normalized_candidates.id"),
+        nullable=True,
+        index=True,
+    )
+    canonical_event_id = Column(
+        Integer,
+        ForeignKey("financial_events.id"),
+        nullable=True,
+        index=True,
+    )
+    reversal_event_id = Column(
+        Integer,
+        ForeignKey("financial_events.id"),
+        nullable=True,
+        index=True,
+    )
+    version = Column(Integer, nullable=False, default=1)
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.datetime.now(datetime.timezone.utc),
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.datetime.now(datetime.timezone.utc),
+    )
+
+
+class ProviderTransactionLifecycleHistory(Base):
+    __tablename__ = "provider_transaction_lifecycle_history"
+    __table_args__ = (
+        CheckConstraint(
+            "lifecycle_version >= 1",
+            name="ck_provider_transaction_lifecycle_history_version_positive",
+        ),
+        CheckConstraint(
+            "transition_type IN ('INITIALIZED', 'ADVANCED', 'REFRESHED', 'CANONICAL_LINKED')",
+            name="ck_provider_transaction_lifecycle_history_transition_type",
+        ),
+        UniqueConstraint(
+            "lifecycle_id",
+            "lifecycle_version",
+            name="uq_provider_transaction_lifecycle_history_version",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    lifecycle_id = Column(
+        Integer,
+        ForeignKey("provider_transaction_lifecycles.id"),
+        nullable=False,
+        index=True,
+    )
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    lifecycle_version = Column(Integer, nullable=False)
+    transition_type = Column(String(32), nullable=False)
+    source_candidate_id = Column(
+        Integer,
+        ForeignKey("provider_normalized_candidates.id"),
+        nullable=False,
+        index=True,
+    )
+    previous_state = Column(JSON, nullable=True)
+    new_state = Column(JSON, nullable=False)
+    recorded_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.datetime.now(datetime.timezone.utc),
+    )
+
+
 class CommandReceipt(Base):
     __tablename__ = "command_receipts"
     __table_args__ = (

@@ -227,6 +227,9 @@ def create_reversal_event(
     actor_type: str = "USER",
     actor_user_id: int | None = None,
     reason: str | None = None,
+    provenance: str = "USER_MANUAL",
+    confidence: str = "USER_CONFIRMED",
+    interpretation_state: str = "USER_CONFIRMED",
 ) -> FinancialEvent:
     original = _owned_active_event(db, user_id=user_id, event_id=original_event_id)
     if original.event_type not in {"INCOME", "EXPENSE", "TRANSFER"}:
@@ -260,9 +263,9 @@ def create_reversal_event(
         category=original.category,
         occurred_at=occurred,
         effective_at=occurred,
-        interpretation_state="USER_CONFIRMED",
-        provenance="USER_MANUAL",
-        confidence="USER_CONFIRMED",
+        interpretation_state=interpretation_state,
+        provenance=provenance,
+        confidence=confidence,
         lifecycle_state="ACTIVE",
         version=1,
     )

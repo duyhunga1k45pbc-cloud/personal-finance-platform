@@ -26,6 +26,7 @@ from app.provider_interpretation_service import (
     materialization_blocker,
     normalize_external_transaction,
 )
+from app.provider_lifecycle_service import get_provider_lifecycle, snapshot_provider_lifecycle
 from app.routers.auth import get_current_user
 from app.schemas import (
     ExternalTransactionEvidenceCreate,
@@ -387,7 +388,17 @@ def normalize_provider_transaction(
         )
     except ProviderInterpretationError as exc:
         db.rollback()
-        status = 409 if "same evidence" in str(exc).lower() or "concurrent normalization" in str(exc).lower() else 422
+        message = str(exc).lower()
+        conflict_markers = (
+            "same evidence",
+            "concurrent normalization",
+            "invalid provider lifecycle transition",
+            "manual causal resolution",
+            "already has an active reversal",
+            "multiple active reversals",
+            "conflicting provider lifecycle statuses",
+        )
+        status = 409 if any(marker in message for marker in conflict_markers) else 422
         raise HTTPException(status_code=status, detail=str(exc)) from exc
     body = {
         "candidate": {
@@ -402,6 +413,7 @@ def normalize_provider_transaction(
         "interpretation": _interpretation_body(db, result.interpretation),
         "candidate_deduplicated": not result.candidate_created,
         "interpretation_locked": result.interpretation_locked,
+        "lifecycle_ignored_stale": result.lifecycle_ignored_stale,
     }
     add_command_receipt(
         db,
@@ -439,6 +451,32 @@ def get_provider_interpretation(
     if interp is None:
         raise HTTPException(status_code=404, detail="Provider interpretation not found")
     return _interpretation_body(db, interp)
+
+
+@router.get("/{connection_id}/external-transactions/{transaction_record_id}/lifecycle")
+def get_provider_transaction_lifecycle(
+    connection_id: int,
+    transaction_record_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    connection = get_owned_provider_connection(db, user_id=current_user.id, connection_id=connection_id)
+    if connection is None:
+        raise HTTPException(status_code=404, detail="Provider connection not found")
+    _transaction_for_connection(
+        db,
+        user_id=current_user.id,
+        connection_id=connection.id,
+        transaction_record_id=transaction_record_id,
+    )
+    lifecycle = get_provider_lifecycle(
+        db,
+        user_id=current_user.id,
+        transaction_record_id=transaction_record_id,
+    )
+    if lifecycle is None:
+        raise HTTPException(status_code=404, detail="Provider lifecycle not available")
+    return snapshot_provider_lifecycle(lifecycle)
 
 
 @router.post("/{connection_id}/external-transactions/{transaction_record_id}/classification")

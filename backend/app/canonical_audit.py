@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import datetime
 from decimal import Decimal
 
 from sqlalchemy.orm import Session
@@ -25,12 +26,21 @@ from app.models import (
     ProviderNormalizedCandidate,
     ProviderTransactionInterpretation,
     ProviderInterpretationHistory,
+    ProviderTransactionLifecycle,
+    ProviderTransactionLifecycleHistory,
     Transaction,
     User,
 )
 from app.provider_interpretation_service import snapshot_provider_interpretation
+from app.provider_lifecycle_service import snapshot_provider_lifecycle
 from app.provider_service import hash_raw_payload
 from app.reconciliation_service import snapshot_reconciliation
+
+
+def _utc_datetime(value: datetime.datetime) -> datetime.datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=datetime.timezone.utc)
+    return value.astimezone(datetime.timezone.utc)
 
 
 def _expected_signed_amount(transaction: Transaction) -> Decimal:
@@ -862,6 +872,280 @@ def find_first_provider_interpretation_divergence(db: Session, user_id: int) -> 
     return None
 
 
+
+def find_first_provider_lifecycle_divergence(db: Session, user_id: int) -> dict | None:
+    lifecycles = (
+        db.query(ProviderTransactionLifecycle)
+        .filter(ProviderTransactionLifecycle.user_id == user_id)
+        .order_by(ProviderTransactionLifecycle.id.asc())
+        .all()
+    )
+
+    for lifecycle in lifecycles:
+        transaction = (
+            db.query(ExternalTransaction)
+            .filter(ExternalTransaction.id == lifecycle.external_transaction_record_id)
+            .one_or_none()
+        )
+        candidate = (
+            db.query(ProviderNormalizedCandidate)
+            .filter(ProviderNormalizedCandidate.id == lifecycle.current_candidate_id)
+            .one_or_none()
+        )
+        if transaction is None or candidate is None:
+            return {
+                "provider_lifecycle_id": lifecycle.id,
+                "reason": "provider_lifecycle_source_missing",
+            }
+        if transaction.user_id != user_id or candidate.user_id != user_id:
+            return {
+                "provider_lifecycle_id": lifecycle.id,
+                "reason": "provider_lifecycle_owner_mismatch",
+            }
+        if candidate.external_transaction_record_id != transaction.id:
+            return {
+                "provider_lifecycle_id": lifecycle.id,
+                "reason": "provider_lifecycle_candidate_transaction_mismatch",
+            }
+        if candidate.normalized_status != lifecycle.current_status:
+            return {
+                "provider_lifecycle_id": lifecycle.id,
+                "reason": "provider_lifecycle_status_candidate_mismatch",
+                "lifecycle_status": lifecycle.current_status,
+                "candidate_status": candidate.normalized_status,
+            }
+        evidence = (
+            db.query(ExternalTransactionEvidence)
+            .filter(ExternalTransactionEvidence.id == candidate.source_evidence_id)
+            .one_or_none()
+        )
+        if evidence is None:
+            return {
+                "provider_lifecycle_id": lifecycle.id,
+                "reason": "provider_lifecycle_evidence_missing",
+            }
+        if _utc_datetime(evidence.observed_at) != _utc_datetime(lifecycle.current_observed_at):
+            return {
+                "provider_lifecycle_id": lifecycle.id,
+                "reason": "provider_lifecycle_observed_at_mismatch",
+            }
+
+        # The current lifecycle must not lag behind a newer non-UNKNOWN immutable
+        # observation. Older observations normalized late are allowed and ignored.
+        candidate_rows = (
+            db.query(ProviderNormalizedCandidate, ExternalTransactionEvidence)
+            .join(
+                ExternalTransactionEvidence,
+                ExternalTransactionEvidence.id == ProviderNormalizedCandidate.source_evidence_id,
+            )
+            .filter(
+                ProviderNormalizedCandidate.external_transaction_record_id == transaction.id,
+                ProviderNormalizedCandidate.normalized_status != "UNKNOWN",
+            )
+            .all()
+        )
+        allowed_from_current = {
+            "PENDING": {"PENDING", "POSTED", "REVERSED"},
+            "POSTED": {"POSTED", "REVERSED"},
+            "REVERSED": {"REVERSED"},
+        }[lifecycle.current_status]
+        for other_candidate, other_evidence in candidate_rows:
+            if (
+                _utc_datetime(other_evidence.observed_at) > _utc_datetime(lifecycle.current_observed_at)
+                and other_candidate.normalized_status in allowed_from_current
+            ):
+                return {
+                    "provider_lifecycle_id": lifecycle.id,
+                    "normalized_candidate_id": other_candidate.id,
+                    "reason": "provider_lifecycle_lags_newer_observation",
+                }
+
+        history = (
+            db.query(ProviderTransactionLifecycleHistory)
+            .filter(ProviderTransactionLifecycleHistory.lifecycle_id == lifecycle.id)
+            .order_by(ProviderTransactionLifecycleHistory.lifecycle_version.asc())
+            .all()
+        )
+        expected_versions = list(range(1, lifecycle.version + 1))
+        actual_versions = [row.lifecycle_version for row in history]
+        if actual_versions != expected_versions:
+            return {
+                "provider_lifecycle_id": lifecycle.id,
+                "reason": "provider_lifecycle_history_version_gap",
+                "expected_versions": expected_versions,
+                "actual_versions": actual_versions,
+            }
+        if not history or history[0].transition_type != "INITIALIZED":
+            return {
+                "provider_lifecycle_id": lifecycle.id,
+                "reason": "provider_lifecycle_history_does_not_start_initialized",
+            }
+        for index, row in enumerate(history):
+            source_candidate = (
+                db.query(ProviderNormalizedCandidate)
+                .filter(ProviderNormalizedCandidate.id == row.source_candidate_id)
+                .one_or_none()
+            )
+            if source_candidate is None or source_candidate.user_id != user_id:
+                return {
+                    "provider_lifecycle_id": lifecycle.id,
+                    "reason": "provider_lifecycle_history_source_candidate_invalid",
+                }
+            if source_candidate.external_transaction_record_id != transaction.id:
+                return {
+                    "provider_lifecycle_id": lifecycle.id,
+                    "reason": "provider_lifecycle_history_transaction_mismatch",
+                }
+            if index == 0:
+                if row.previous_state is not None:
+                    return {
+                        "provider_lifecycle_id": lifecycle.id,
+                        "reason": "provider_lifecycle_initial_history_has_previous_state",
+                    }
+            elif row.previous_state != history[index - 1].new_state:
+                return {
+                    "provider_lifecycle_id": lifecycle.id,
+                    "reason": "provider_lifecycle_history_chain_break",
+                    "lifecycle_version": row.lifecycle_version,
+                }
+        if history[-1].new_state != snapshot_provider_lifecycle(lifecycle):
+            return {
+                "provider_lifecycle_id": lifecycle.id,
+                "reason": "provider_lifecycle_latest_history_snapshot_mismatch",
+            }
+
+        if lifecycle.current_status == "PENDING":
+            if any(
+                value is not None
+                for value in (
+                    lifecycle.posted_candidate_id,
+                    lifecycle.reversed_candidate_id,
+                    lifecycle.canonical_event_id,
+                    lifecycle.reversal_event_id,
+                )
+            ):
+                return {
+                    "provider_lifecycle_id": lifecycle.id,
+                    "reason": "pending_provider_lifecycle_has_downstream_state",
+                }
+        elif lifecycle.current_status == "POSTED":
+            if lifecycle.posted_candidate_id is None or lifecycle.reversed_candidate_id is not None or lifecycle.reversal_event_id is not None:
+                return {
+                    "provider_lifecycle_id": lifecycle.id,
+                    "reason": "posted_provider_lifecycle_shape_invalid",
+                }
+        elif lifecycle.current_status == "REVERSED":
+            if lifecycle.reversed_candidate_id is None:
+                return {
+                    "provider_lifecycle_id": lifecycle.id,
+                    "reason": "reversed_provider_lifecycle_missing_reversed_candidate",
+                }
+            if (lifecycle.canonical_event_id is None) != (lifecycle.reversal_event_id is None):
+                return {
+                    "provider_lifecycle_id": lifecycle.id,
+                    "reason": "reversed_provider_lifecycle_causal_pair_incomplete",
+                }
+        else:
+            return {
+                "provider_lifecycle_id": lifecycle.id,
+                "reason": "provider_lifecycle_status_invalid",
+            }
+
+        if lifecycle.posted_candidate_id is not None:
+            posted = db.query(ProviderNormalizedCandidate).filter(ProviderNormalizedCandidate.id == lifecycle.posted_candidate_id).one_or_none()
+            if posted is None or posted.user_id != user_id or posted.external_transaction_record_id != transaction.id or posted.normalized_status != "POSTED":
+                return {
+                    "provider_lifecycle_id": lifecycle.id,
+                    "reason": "provider_lifecycle_posted_candidate_invalid",
+                }
+        if lifecycle.reversed_candidate_id is not None:
+            reversed_candidate = db.query(ProviderNormalizedCandidate).filter(ProviderNormalizedCandidate.id == lifecycle.reversed_candidate_id).one_or_none()
+            if reversed_candidate is None or reversed_candidate.user_id != user_id or reversed_candidate.external_transaction_record_id != transaction.id or reversed_candidate.normalized_status != "REVERSED":
+                return {
+                    "provider_lifecycle_id": lifecycle.id,
+                    "reason": "provider_lifecycle_reversed_candidate_invalid",
+                }
+
+        interpretation = (
+            db.query(ProviderTransactionInterpretation)
+            .filter(
+                ProviderTransactionInterpretation.external_transaction_record_id == transaction.id,
+                ProviderTransactionInterpretation.user_id == user_id,
+            )
+            .one_or_none()
+        )
+        if interpretation is None:
+            return {
+                "provider_lifecycle_id": lifecycle.id,
+                "reason": "provider_lifecycle_interpretation_missing",
+            }
+
+        if lifecycle.canonical_event_id is not None:
+            if interpretation.canonical_event_id != lifecycle.canonical_event_id:
+                return {
+                    "provider_lifecycle_id": lifecycle.id,
+                    "reason": "provider_lifecycle_canonical_interpretation_mismatch",
+                }
+            original = (
+                db.query(FinancialEvent)
+                .filter(FinancialEvent.id == lifecycle.canonical_event_id)
+                .one_or_none()
+            )
+            if original is None or original.user_id != user_id or original.provenance != "PROVIDER":
+                return {
+                    "provider_lifecycle_id": lifecycle.id,
+                    "reason": "provider_lifecycle_canonical_event_invalid",
+                }
+
+        if lifecycle.reversal_event_id is not None:
+            reversal = (
+                db.query(FinancialEvent)
+                .filter(FinancialEvent.id == lifecycle.reversal_event_id)
+                .one_or_none()
+            )
+            if reversal is None or reversal.user_id != user_id or reversal.event_type != "REVERSAL":
+                return {
+                    "provider_lifecycle_id": lifecycle.id,
+                    "reason": "provider_lifecycle_reversal_event_invalid",
+                }
+            link = (
+                db.query(FinancialEventLink)
+                .filter(FinancialEventLink.from_event_id == reversal.id)
+                .one_or_none()
+            )
+            if link is None or link.relation_type != "REVERSAL_OF" or link.to_event_id != lifecycle.canonical_event_id:
+                return {
+                    "provider_lifecycle_id": lifecycle.id,
+                    "reason": "provider_lifecycle_reversal_link_invalid",
+                }
+
+    interpretations = (
+        db.query(ProviderTransactionInterpretation)
+        .filter(ProviderTransactionInterpretation.user_id == user_id)
+        .all()
+    )
+    for interpretation in interpretations:
+        candidate = (
+            db.query(ProviderNormalizedCandidate)
+            .filter(ProviderNormalizedCandidate.id == interpretation.normalized_candidate_id)
+            .one()
+        )
+        lifecycle = (
+            db.query(ProviderTransactionLifecycle)
+            .filter(
+                ProviderTransactionLifecycle.external_transaction_record_id
+                == interpretation.external_transaction_record_id
+            )
+            .one_or_none()
+        )
+        if candidate.normalized_status in {"PENDING", "POSTED", "REVERSED"} and lifecycle is None:
+            return {
+                "provider_interpretation_id": interpretation.id,
+                "reason": "provider_interpretation_missing_source_lifecycle",
+            }
+
+    return None
+
 def audit_user(db: Session, user_id: int) -> dict:
     legacy = legacy_summary(db, user_id)
     canonical_legacy = canonical_legacy_summary(db, user_id)
@@ -874,6 +1158,7 @@ def audit_user(db: Session, user_id: int) -> dict:
     reconciliation_divergence = find_first_reconciliation_divergence(db, user_id)
     provider_evidence_divergence = find_first_provider_evidence_divergence(db, user_id)
     provider_interpretation_divergence = find_first_provider_interpretation_divergence(db, user_id)
+    provider_lifecycle_divergence = find_first_provider_lifecycle_divergence(db, user_id)
 
     summary_match = legacy == canonical_legacy
     return {
@@ -888,6 +1173,7 @@ def audit_user(db: Session, user_id: int) -> dict:
             and reconciliation_divergence is None
             and provider_evidence_divergence is None
             and provider_interpretation_divergence is None
+            and provider_lifecycle_divergence is None
         ),
         "legacy": {key: str(value) for key, value in asdict(legacy).items()},
         "canonical": {
@@ -905,6 +1191,7 @@ def audit_user(db: Session, user_id: int) -> dict:
         "reconciliation_divergence": reconciliation_divergence,
         "provider_evidence_divergence": provider_evidence_divergence,
         "provider_interpretation_divergence": provider_interpretation_divergence,
+        "provider_lifecycle_divergence": provider_lifecycle_divergence,
     }
 
 
