@@ -8,6 +8,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    JSON,
     Numeric,
     String,
     UniqueConstraint,
@@ -112,6 +113,10 @@ class FinancialEvent(Base):
             name="ck_financial_events_confidence",
         ),
         CheckConstraint(
+            "lifecycle_state IN ('ACTIVE', 'VOIDED')",
+            name="ck_financial_events_lifecycle_state",
+        ),
+        CheckConstraint(
             "version >= 1",
             name="ck_financial_events_version_positive",
         ),
@@ -124,8 +129,7 @@ class FinancialEvent(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
 
-    # Transitional bridge during Task 2. The canonical model is not intended to
-    # depend on legacy Transaction forever, so this is nullable for future events.
+    # Transitional bridge while the legacy Transaction API remains available.
     legacy_transaction_id = Column(
         Integer,
         ForeignKey("transactions.id"),
@@ -137,8 +141,7 @@ class FinancialEvent(Base):
     description = Column(String, nullable=True)
     category = Column(String, nullable=True)
 
-    # Legacy Transaction.date has no timezone semantics. Task 2 preserves it
-    # exactly rather than inventing timezone information during migration.
+    # Legacy Transaction.date has no timezone semantics. Preserve it exactly.
     occurred_at = Column(DateTime, nullable=False)
     effective_at = Column(DateTime, nullable=False)
     recorded_at = Column(
@@ -154,6 +157,7 @@ class FinancialEvent(Base):
     )
     provenance = Column(String, nullable=False, default="USER_MANUAL")
     confidence = Column(String, nullable=False, default="USER_CONFIRMED")
+    lifecycle_state = Column(String, nullable=False, default="ACTIVE")
     version = Column(Integer, nullable=False, default=1)
 
 
@@ -182,6 +186,55 @@ class FinancialEventEntry(Base):
     # Signed canonical movement for the account: + inflow, - outflow.
     amount = Column(Numeric(18, 2), nullable=False)
     created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.datetime.now(datetime.timezone.utc),
+    )
+
+
+class FinancialEventHistory(Base):
+    __tablename__ = "financial_event_history"
+    __table_args__ = (
+        CheckConstraint(
+            "transition_type IN ('CREATED', 'CORRECTED', 'VOIDED')",
+            name="ck_financial_event_history_transition_type",
+        ),
+        CheckConstraint(
+            "actor_type IN ('USER', 'SYSTEM', 'PROVIDER', 'AI')",
+            name="ck_financial_event_history_actor_type",
+        ),
+        CheckConstraint(
+            "event_version >= 1",
+            name="ck_financial_event_history_version_positive",
+        ),
+        UniqueConstraint(
+            "financial_event_id",
+            "event_version",
+            name="uq_financial_event_history_event_version",
+        ),
+        Index(
+            "ix_financial_event_history_event_recorded",
+            "financial_event_id",
+            "recorded_at",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    financial_event_id = Column(
+        Integer,
+        ForeignKey("financial_events.id"),
+        nullable=False,
+        index=True,
+    )
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    event_version = Column(Integer, nullable=False)
+    transition_type = Column(String, nullable=False)
+    actor_type = Column(String, nullable=False)
+    actor_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    previous_state = Column(JSON, nullable=True)
+    new_state = Column(JSON, nullable=False)
+    reason = Column(String, nullable=True)
+    recorded_at = Column(
         DateTime(timezone=True),
         nullable=False,
         default=lambda: datetime.datetime.now(datetime.timezone.utc),

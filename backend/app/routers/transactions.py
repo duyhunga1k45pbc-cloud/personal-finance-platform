@@ -5,11 +5,11 @@ from sqlalchemy.orm import Session
 
 from app.account_service import get_default_cash_account, get_owned_account
 from app.canonical_service import (
-    delete_canonical_for_legacy_transaction,
     sync_canonical_from_legacy_transaction,
+    void_canonical_for_legacy_transaction,
 )
 from app.database import SessionLocal
-from app.models import Transaction, User
+from app.models import FinancialEvent, FinancialEventHistory, Transaction, User
 from app.routers.auth import get_current_user
 from app.schemas import TransactionCreate
 
@@ -44,6 +44,20 @@ def _resolve_owned_account(
     return account
 
 
+def _active_transaction_query(db: Session, user_id: int):
+    return (
+        db.query(Transaction)
+        .join(
+            FinancialEvent,
+            FinancialEvent.legacy_transaction_id == Transaction.id,
+        )
+        .filter(
+            Transaction.user_id == user_id,
+            FinancialEvent.lifecycle_state == "ACTIVE",
+        )
+    )
+
+
 @router.get("")
 def list_transactions(
     type: Literal["income", "expense"] | None = Query(default=None),
@@ -53,7 +67,7 @@ def list_transactions(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    query = db.query(Transaction).filter(Transaction.user_id == current_user.id)
+    query = _active_transaction_query(db, current_user.id)
     if type is not None:
         query = query.filter(Transaction.type == type)
     if category is not None:
@@ -77,11 +91,8 @@ def get_transaction(
     current_user: User = Depends(get_current_user),
 ):
     transaction = (
-        db.query(Transaction)
-        .filter(
-            Transaction.id == transaction_id,
-            Transaction.user_id == current_user.id,
-        )
+        _active_transaction_query(db, current_user.id)
+        .filter(Transaction.id == transaction_id)
         .first()
     )
 
@@ -89,6 +100,54 @@ def get_transaction(
         raise HTTPException(status_code=404, detail="Transaction not found")
 
     return transaction
+
+
+@router.get("/{transaction_id}/history")
+def get_transaction_history(
+    transaction_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    transaction = (
+        db.query(Transaction)
+        .filter(
+            Transaction.id == transaction_id,
+            Transaction.user_id == current_user.id,
+        )
+        .first()
+    )
+    if transaction is None:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+
+    event = (
+        db.query(FinancialEvent)
+        .filter(FinancialEvent.legacy_transaction_id == transaction.id)
+        .one_or_none()
+    )
+    if event is None:
+        raise HTTPException(status_code=409, detail="Canonical event is missing")
+
+    rows = (
+        db.query(FinancialEventHistory)
+        .filter(FinancialEventHistory.financial_event_id == event.id)
+        .order_by(FinancialEventHistory.event_version.asc())
+        .all()
+    )
+    return [
+        {
+            "id": row.id,
+            "financial_event_id": row.financial_event_id,
+            "event_version": row.event_version,
+            "transition_type": row.transition_type,
+            "actor_type": row.actor_type,
+            "actor_user_id": row.actor_user_id,
+            "previous_state": row.previous_state,
+            "new_state": row.new_state,
+            "reason": row.reason,
+            "recorded_at": row.recorded_at,
+        }
+        for row in rows
+    ]
 
 
 @router.post("")
@@ -112,11 +171,15 @@ def create_transaction(
         account_id=account.id,
     )
 
-    # Task 2 dual-write: legacy Transaction remains API-compatible while the
-    # canonical event is created in the same database transaction.
     db.add(new_item)
     db.flush()
-    sync_canonical_from_legacy_transaction(db, new_item)
+    sync_canonical_from_legacy_transaction(
+        db,
+        new_item,
+        actor_type="USER",
+        actor_user_id=current_user.id,
+        reason="legacy_api_create",
+    )
     db.commit()
     db.refresh(new_item)
 
@@ -131,11 +194,8 @@ def update_transaction(
     current_user: User = Depends(get_current_user),
 ):
     transaction = (
-        db.query(Transaction)
-        .filter(
-            Transaction.id == transaction_id,
-            Transaction.user_id == current_user.id,
-        )
+        _active_transaction_query(db, current_user.id)
+        .filter(Transaction.id == transaction_id)
         .first()
     )
     if transaction is None:
@@ -154,7 +214,13 @@ def update_transaction(
     transaction.category = transaction_update.category
     transaction.type = transaction_update.type
 
-    sync_canonical_from_legacy_transaction(db, transaction)
+    sync_canonical_from_legacy_transaction(
+        db,
+        transaction,
+        actor_type="USER",
+        actor_user_id=current_user.id,
+        reason="legacy_api_update",
+    )
     db.commit()
     db.refresh(transaction)
 
@@ -168,22 +234,23 @@ def delete_transaction(
     current_user: User = Depends(get_current_user),
 ):
     transaction = (
-        db.query(Transaction)
-        .filter(
-            Transaction.id == transaction_id,
-            Transaction.user_id == current_user.id,
-        )
+        _active_transaction_query(db, current_user.id)
+        .filter(Transaction.id == transaction_id)
         .first()
     )
 
     if transaction is None:
         raise HTTPException(status_code=404, detail="Transaction not found")
 
-    # Transitional Task 2 behavior only. Both legacy and canonical mirrors are
-    # deleted atomically so parity remains exact until history/correction
-    # semantics replace destructive CRUD in a later milestone.
-    delete_canonical_for_legacy_transaction(db, transaction_id)
-    db.delete(transaction)
+    # Task 3 correction semantics: preserve the legacy row and canonical event,
+    # but void the canonical event so it stops contributing to current state.
+    void_canonical_for_legacy_transaction(
+        db,
+        transaction_id,
+        actor_type="USER",
+        actor_user_id=current_user.id,
+        reason="legacy_api_delete",
+    )
     db.commit()
     return {
         "message": "Transaction deleted successfully",

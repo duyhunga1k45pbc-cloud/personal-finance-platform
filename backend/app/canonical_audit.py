@@ -5,8 +5,18 @@ from decimal import Decimal
 
 from sqlalchemy.orm import Session
 
-from app.canonical_service import canonical_summary, legacy_summary
-from app.models import FinancialEvent, FinancialEventEntry, Transaction, User
+from app.canonical_service import (
+    canonical_summary,
+    legacy_summary,
+    snapshot_financial_event,
+)
+from app.models import (
+    FinancialEvent,
+    FinancialEventEntry,
+    FinancialEventHistory,
+    Transaction,
+    User,
+)
 
 
 def _expected_signed_amount(transaction: Transaction) -> Decimal:
@@ -108,21 +118,82 @@ def find_first_divergence(db: Session, user_id: int) -> dict | None:
     return None
 
 
+def find_first_history_divergence(db: Session, user_id: int) -> dict | None:
+    events = (
+        db.query(FinancialEvent)
+        .filter(FinancialEvent.user_id == user_id)
+        .order_by(FinancialEvent.id.asc())
+        .all()
+    )
+
+    for event in events:
+        history = (
+            db.query(FinancialEventHistory)
+            .filter(FinancialEventHistory.financial_event_id == event.id)
+            .order_by(FinancialEventHistory.event_version.asc())
+            .all()
+        )
+
+        if not history:
+            return {
+                "financial_event_id": event.id,
+                "reason": "missing_history",
+            }
+
+        expected_versions = list(range(1, event.version + 1))
+        actual_versions = [row.event_version for row in history]
+        if actual_versions != expected_versions:
+            return {
+                "financial_event_id": event.id,
+                "reason": "history_version_gap",
+                "expected_versions": expected_versions,
+                "actual_versions": actual_versions,
+            }
+
+        if history[0].transition_type != "CREATED":
+            return {
+                "financial_event_id": event.id,
+                "reason": "history_does_not_start_with_created",
+            }
+
+        current_snapshot = snapshot_financial_event(db, event)
+        if history[-1].new_state != current_snapshot:
+            return {
+                "financial_event_id": event.id,
+                "reason": "latest_history_snapshot_mismatch",
+                "event_version": event.version,
+            }
+
+        if event.lifecycle_state == "VOIDED" and history[-1].transition_type != "VOIDED":
+            return {
+                "financial_event_id": event.id,
+                "reason": "voided_event_missing_void_transition",
+            }
+
+    return None
+
+
 def audit_user(db: Session, user_id: int) -> dict:
     legacy = legacy_summary(db, user_id)
     canonical = canonical_summary(db, user_id)
     first_divergence = find_first_divergence(db, user_id)
+    history_divergence = find_first_history_divergence(db, user_id)
 
     summary_match = legacy == canonical
     return {
         "user_id": user_id,
-        "ok": summary_match and first_divergence is None,
+        "ok": (
+            summary_match
+            and first_divergence is None
+            and history_divergence is None
+        ),
         "legacy": {key: str(value) for key, value in asdict(legacy).items()},
         "canonical": {
             key: str(value) for key, value in asdict(canonical).items()
         },
         "summary_match": summary_match,
         "first_divergence": first_divergence,
+        "history_divergence": history_divergence,
     }
 
 

@@ -10,6 +10,7 @@ from app.models import (
     FinancialAccount,
     FinancialEvent,
     FinancialEventEntry,
+    FinancialEventHistory,
     Transaction,
 )
 
@@ -45,16 +46,75 @@ def _validate_transaction_ownership(db: Session, transaction: Transaction) -> No
         raise ValueError("Transaction owner does not match account owner")
 
 
+def snapshot_financial_event(db: Session, event: FinancialEvent) -> dict:
+    entries = (
+        db.query(FinancialEventEntry)
+        .filter(FinancialEventEntry.financial_event_id == event.id)
+        .order_by(FinancialEventEntry.id.asc())
+        .all()
+    )
+    return {
+        "event_type": event.event_type,
+        "description": event.description,
+        "category": event.category,
+        "occurred_at": event.occurred_at.isoformat() if event.occurred_at else None,
+        "effective_at": event.effective_at.isoformat() if event.effective_at else None,
+        "interpretation_state": event.interpretation_state,
+        "provenance": event.provenance,
+        "confidence": event.confidence,
+        "lifecycle_state": event.lifecycle_state,
+        "version": event.version,
+        "entries": [
+            {
+                "account_id": entry.account_id,
+                "amount": format(Decimal(entry.amount), "f"),
+            }
+            for entry in entries
+        ],
+    }
+
+
+def append_financial_event_history(
+    db: Session,
+    event: FinancialEvent,
+    *,
+    transition_type: str,
+    actor_type: str,
+    actor_user_id: int | None,
+    previous_state: dict | None,
+    new_state: dict,
+    reason: str | None = None,
+) -> FinancialEventHistory:
+    history = FinancialEventHistory(
+        financial_event_id=event.id,
+        user_id=event.user_id,
+        event_version=event.version,
+        transition_type=transition_type,
+        actor_type=actor_type,
+        actor_user_id=actor_user_id,
+        previous_state=previous_state,
+        new_state=new_state,
+        reason=reason,
+    )
+    db.add(history)
+    db.flush()
+    return history
+
+
 def sync_canonical_from_legacy_transaction(
     db: Session,
     transaction: Transaction,
+    *,
+    actor_type: str = "SYSTEM",
+    actor_user_id: int | None = None,
+    reason: str | None = None,
 ) -> FinancialEvent:
-    """Mirror one legacy transaction into the canonical model.
+    """Mirror one legacy transaction into canonical state with history.
 
-    Task 2 intentionally keeps Transaction as the active API contract while
-    FinancialEvent + FinancialEventEntry run in parallel. This function is
-    idempotent for a given legacy transaction and must be called before the
-    surrounding DB transaction commits.
+    Task 3 keeps the legacy Transaction API as a compatibility surface, but any
+    canonical state mutation is now versioned and produces append-only history.
+    Calling this function with an already-equal state is idempotent and does not
+    create a new history row or bump the version.
     """
 
     if transaction.id is None:
@@ -83,34 +143,11 @@ def sync_canonical_from_legacy_transaction(
             interpretation_state="USER_CONFIRMED",
             provenance="USER_MANUAL",
             confidence="USER_CONFIRMED",
+            lifecycle_state="ACTIVE",
+            version=1,
         )
         db.add(event)
         db.flush()
-    else:
-        if event.user_id != transaction.user_id:
-            raise ValueError("Canonical event owner diverged from legacy owner")
-
-        event.event_type = transaction.type.upper()
-        event.description = transaction.description
-        event.category = transaction.category
-        event.occurred_at = transaction.date
-        event.effective_at = transaction.date
-
-    entries = (
-        db.query(FinancialEventEntry)
-        .filter(FinancialEventEntry.financial_event_id == event.id)
-        .all()
-    )
-    if len(entries) > 1:
-        raise ValueError(
-            "Task 2 legacy mirror must contain exactly one canonical entry"
-        )
-
-    if entries:
-        entry = entries[0]
-        entry.account_id = transaction.account_id
-        entry.amount = signed_amount
-    else:
         db.add(
             FinancialEventEntry(
                 financial_event_id=event.id,
@@ -118,37 +155,114 @@ def sync_canonical_from_legacy_transaction(
                 amount=signed_amount,
             )
         )
+        db.flush()
+        append_financial_event_history(
+            db,
+            event,
+            transition_type="CREATED",
+            actor_type=actor_type,
+            actor_user_id=actor_user_id,
+            previous_state=None,
+            new_state=snapshot_financial_event(db, event),
+            reason=reason,
+        )
+        return event
 
+    if event.user_id != transaction.user_id:
+        raise ValueError("Canonical event owner diverged from legacy owner")
+    if event.lifecycle_state != "ACTIVE":
+        raise ValueError("Cannot mutate a voided canonical event")
+
+    previous_state = snapshot_financial_event(db, event)
+
+    event.event_type = transaction.type.upper()
+    event.description = transaction.description
+    event.category = transaction.category
+    event.occurred_at = transaction.date
+    event.effective_at = transaction.date
+
+    entries = (
+        db.query(FinancialEventEntry)
+        .filter(FinancialEventEntry.financial_event_id == event.id)
+        .all()
+    )
+    if len(entries) != 1:
+        raise ValueError(
+            "Legacy compatibility event must contain exactly one canonical entry"
+        )
+
+    entry = entries[0]
+    entry.account_id = transaction.account_id
+    entry.amount = signed_amount
+    db.flush()
+
+    candidate_state = snapshot_financial_event(db, event)
+    if candidate_state == previous_state:
+        return event
+
+    event.version += 1
+    db.flush()
+    append_financial_event_history(
+        db,
+        event,
+        transition_type="CORRECTED",
+        actor_type=actor_type,
+        actor_user_id=actor_user_id,
+        previous_state=previous_state,
+        new_state=snapshot_financial_event(db, event),
+        reason=reason,
+    )
     return event
 
 
-def delete_canonical_for_legacy_transaction(
+def void_canonical_for_legacy_transaction(
     db: Session,
     legacy_transaction_id: int,
-) -> None:
-    """Temporary Task 2 compatibility for legacy hard-delete behavior.
-
-    Canonical destructive deletion is not the final V1 semantics. It exists
-    only while the legacy CRUD API remains authoritative. A later milestone
-    replaces this with correction/history semantics.
-    """
-
+    *,
+    actor_type: str = "SYSTEM",
+    actor_user_id: int | None = None,
+    reason: str | None = None,
+) -> FinancialEvent:
     event = (
         db.query(FinancialEvent)
         .filter(FinancialEvent.legacy_transaction_id == legacy_transaction_id)
         .one_or_none()
     )
     if event is None:
-        return
+        raise ValueError("Canonical event does not exist")
+    if event.lifecycle_state == "VOIDED":
+        return event
 
-    db.query(FinancialEventEntry).filter(
-        FinancialEventEntry.financial_event_id == event.id
-    ).delete(synchronize_session=False)
-    db.delete(event)
+    previous_state = snapshot_financial_event(db, event)
+    event.lifecycle_state = "VOIDED"
+    event.version += 1
+    db.flush()
+    append_financial_event_history(
+        db,
+        event,
+        transition_type="VOIDED",
+        actor_type=actor_type,
+        actor_user_id=actor_user_id,
+        previous_state=previous_state,
+        new_state=snapshot_financial_event(db, event),
+        reason=reason,
+    )
+    return event
 
 
 def legacy_summary(db: Session, user_id: int) -> FinancialSummary:
-    rows = db.query(Transaction).filter(Transaction.user_id == user_id).all()
+    rows = (
+        db.query(Transaction)
+        .join(
+            FinancialEvent,
+            FinancialEvent.legacy_transaction_id == Transaction.id,
+        )
+        .filter(
+            Transaction.user_id == user_id,
+            FinancialEvent.lifecycle_state == "ACTIVE",
+        )
+        .all()
+    )
 
     income = Decimal("0")
     expense = Decimal("0")
@@ -176,6 +290,7 @@ def canonical_summary(db: Session, user_id: int) -> FinancialSummary:
         .filter(
             FinancialEvent.user_id == user_id,
             FinancialEvent.event_type == "INCOME",
+            FinancialEvent.lifecycle_state == "ACTIVE",
         )
         .scalar()
     )
@@ -188,6 +303,7 @@ def canonical_summary(db: Session, user_id: int) -> FinancialSummary:
         .filter(
             FinancialEvent.user_id == user_id,
             FinancialEvent.event_type == "EXPENSE",
+            FinancialEvent.lifecycle_state == "ACTIVE",
         )
         .scalar()
     )
