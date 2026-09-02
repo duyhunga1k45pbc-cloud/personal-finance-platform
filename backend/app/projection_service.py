@@ -5,11 +5,13 @@ import datetime
 from decimal import Decimal
 import hashlib
 import json
+import logging
 
 from sqlalchemy import func, text
 from sqlalchemy.orm import Session, aliased
 
 from app.canonical_service import FinancialSummary, canonical_summary
+from app.observability import increment_metric, log_event
 from app.models import (
     FinancialAccount,
     FinancialAccountBalanceProjection,
@@ -255,8 +257,16 @@ def rebuild_user_projection(db: Session, user_id: int) -> FinancialProjectionSta
         db.flush()
         db.commit()
         db.refresh(state)
+        increment_metric("projection_rebuilds_completed_total")
+        log_event(
+            "projection.rebuilt",
+            generation=state.generation,
+            account_count=state.account_count,
+        )
         return state
     except Exception:
+        increment_metric("projection_rebuild_failures_total")
+        log_event("projection.rebuild_failed", level=logging.ERROR)
         db.rollback()
         raise
 
@@ -289,8 +299,12 @@ def projection_status(db: Session, user_id: int) -> ProjectionStatus:
 def require_fresh_projection(db: Session, user_id: int) -> FinancialProjectionState:
     status = projection_status(db, user_id)
     if status.status == "MISSING":
+        increment_metric("projection_missing_reads_total")
+        log_event("projection.missing_read")
         raise ProjectionMissingError("Projection has not been rebuilt")
     if status.status == "STALE":
+        increment_metric("projection_stale_reads_total")
+        log_event("projection.stale_read")
         raise ProjectionStaleError("Projection is stale relative to canonical state")
     return (
         db.query(FinancialProjectionState)

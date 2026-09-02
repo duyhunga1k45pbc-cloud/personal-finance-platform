@@ -258,6 +258,8 @@ def test_every_non_public_api_operation_declares_bearer_security():
     schema = app.openapi()
     public = {
         ("get", "/"),
+        ("get", "/health/live"),
+        ("get", "/health/ready"),
         ("post", "/auth/register"),
         ("post", "/auth/login"),
     }

@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.canonical_service import append_financial_event_history, snapshot_financial_event
 from app.credit_card_service import canonical_account_position
+from app.observability import increment_metric, log_event
 from app.models import (
     FinancialAccount,
     FinancialEvent,
@@ -193,6 +194,15 @@ def detect_cash_reconciliation(
         new_state=snapshot_reconciliation(case),
         reason="cash_balance_observed",
     )
+    if status == "MISMATCH":
+        increment_metric("reconciliation_mismatches_detected_total")
+        log_event(
+            "reconciliation.mismatch_detected",
+            reconciliation_id=case.id,
+            account_id=case.account_id,
+        )
+    else:
+        increment_metric("reconciliation_matches_detected_total")
     return case
 
 
@@ -277,6 +287,12 @@ def resolve_reconciliation_with_real_events(
         previous_state=previous_state,
         new_state=snapshot_reconciliation(case),
         reason=reason or "resolved_by_recorded_financial_events",
+    )
+    increment_metric("reconciliation_resolved_real_event_total")
+    log_event(
+        "reconciliation.resolved",
+        reconciliation_id=case.id,
+        resolution_type="REAL_EVENT",
     )
     return case
 
@@ -379,5 +395,11 @@ def confirm_reconciliation_adjustment(
         previous_state=previous_state,
         new_state=snapshot_reconciliation(case),
         reason=reason,
+    )
+    increment_metric("reconciliation_resolved_adjustment_total")
+    log_event(
+        "reconciliation.resolved",
+        reconciliation_id=case.id,
+        resolution_type="ADJUSTMENT",
     )
     return case, event

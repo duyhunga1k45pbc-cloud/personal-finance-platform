@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime
 import hashlib
+import logging
 import json
 from dataclasses import dataclass
 from decimal import Decimal
@@ -10,6 +11,7 @@ from typing import Callable, Protocol, Sequence
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.observability import increment_metric, log_event
 from app.models import (
     ExternalTransaction,
     ExternalTransactionEvidence,
@@ -450,7 +452,17 @@ def sync_provider_connection(
     evidence_deduplicated = 0
 
     for _ in range(max_pages):
-        fetched = adapter.fetch_page(cursor)
+        try:
+            fetched = adapter.fetch_page(cursor)
+        except Exception:
+            increment_metric("provider_sync_failures_total")
+            log_event(
+                "provider_sync.fetch_failed",
+                level=logging.ERROR,
+                connection_id=connection_id,
+            )
+            raise
+
         try:
             commit = commit_sync_page(
                 session_factory,
@@ -463,8 +475,21 @@ def sync_provider_connection(
             # Another worker safely won the page race. Never apply the stale fetched
             # page; restart provider fetch from the newly committed durable cursor.
             checkpoint_conflicts += 1
+            increment_metric("provider_sync_checkpoint_conflicts_total")
+            log_event(
+                "provider_sync.checkpoint_conflict",
+                connection_id=connection_id,
+            )
             cursor = conflict.actual_cursor
             continue
+        except Exception:
+            increment_metric("provider_sync_failures_total")
+            log_event(
+                "provider_sync.commit_failed",
+                level=logging.ERROR,
+                connection_id=connection_id,
+            )
+            raise
 
         if commit.replayed:
             pages_replayed += 1
@@ -475,6 +500,16 @@ def sync_provider_connection(
 
         cursor = commit.next_cursor
         if not fetched.has_more:
+            increment_metric("provider_sync_runs_completed_total")
+            increment_metric("provider_sync_pages_committed_total", pages_committed)
+            increment_metric("provider_sync_pages_replayed_total", pages_replayed)
+            log_event(
+                "provider_sync.completed",
+                connection_id=connection_id,
+                pages_committed=pages_committed,
+                pages_replayed=pages_replayed,
+                checkpoint_conflicts=checkpoint_conflicts,
+            )
             return ProviderSyncResult(
                 connection_id=connection_id,
                 start_cursor=start_cursor,
@@ -486,6 +521,13 @@ def sync_provider_connection(
                 evidence_deduplicated=evidence_deduplicated,
             )
 
+    increment_metric("provider_sync_failures_total")
+    log_event(
+        "provider_sync.max_pages_exceeded",
+        level=logging.ERROR,
+        connection_id=connection_id,
+        max_pages=max_pages,
+    )
     raise ProviderSyncError(
         f"Provider sync exceeded max_pages={max_pages}; refusing an unbounded worker loop"
     )
