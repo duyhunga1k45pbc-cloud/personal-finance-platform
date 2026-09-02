@@ -31,6 +31,8 @@ from app.models import (
     ProviderSyncCheckpoint,
     ProviderSyncPage,
     ProviderSyncPageEvidence,
+    FinancialProjectionState,
+    FinancialAccountBalanceProjection,
     Transaction,
     User,
 )
@@ -38,6 +40,7 @@ from app.provider_interpretation_service import snapshot_provider_interpretation
 from app.provider_lifecycle_service import snapshot_provider_lifecycle
 from app.provider_service import hash_raw_payload
 from app.provider_sync_service import ProviderSyncObservation, sync_page_hash
+from app.projection_service import compute_projection
 from app.reconciliation_service import snapshot_reconciliation
 
 
@@ -1325,6 +1328,103 @@ def find_first_provider_sync_divergence(db: Session, user_id: int) -> dict | Non
 
     return None
 
+def find_first_projection_divergence(db: Session, user_id: int) -> dict | None:
+    state = (
+        db.query(FinancialProjectionState)
+        .filter(FinancialProjectionState.user_id == user_id)
+        .one_or_none()
+    )
+    # A projection is optional derived state. Missing means "not built yet", not
+    # corrupted canonical truth. Once a projection exists, every field must be
+    # reproducible from canonical state.
+    if state is None:
+        orphan = (
+            db.query(FinancialAccountBalanceProjection.id)
+            .filter(FinancialAccountBalanceProjection.user_id == user_id)
+            .first()
+        )
+        if orphan is not None:
+            return {
+                "reason": "projection_account_rows_without_state",
+                "projection_row_id": orphan[0],
+            }
+        return None
+
+    expected = compute_projection(db, user_id)
+    if state.canonical_fingerprint != expected.canonical_fingerprint:
+        return {
+            "reason": "projection_fingerprint_stale",
+            "stored": state.canonical_fingerprint,
+            "expected": expected.canonical_fingerprint,
+        }
+    expected_summary = expected.summary
+    scalar_checks = [
+        ("total_income", Decimal(state.total_income), expected_summary.total_income),
+        ("total_expense", Decimal(state.total_expense), expected_summary.total_expense),
+        ("economic_balance", Decimal(state.economic_balance), expected_summary.balance),
+        ("net_worth", Decimal(state.net_worth), expected.net_worth),
+    ]
+    for field, actual, expected_value in scalar_checks:
+        if actual != expected_value:
+            return {
+                "reason": "projection_scalar_mismatch",
+                "field": field,
+                "actual": str(actual),
+                "expected": str(expected_value),
+            }
+
+    rows = (
+        db.query(FinancialAccountBalanceProjection)
+        .filter(FinancialAccountBalanceProjection.user_id == user_id)
+        .order_by(FinancialAccountBalanceProjection.account_id.asc())
+        .all()
+    )
+    if state.account_count != len(expected.account_balances):
+        return {
+            "reason": "projection_account_count_state_mismatch",
+            "actual": state.account_count,
+            "expected": len(expected.account_balances),
+        }
+    if len(rows) != len(expected.account_balances):
+        return {
+            "reason": "projection_account_row_count_mismatch",
+            "actual": len(rows),
+            "expected": len(expected.account_balances),
+        }
+
+    by_account = {row.account_id: row for row in rows}
+    for account_id, expected_balance in expected.account_balances.items():
+        row = by_account.get(account_id)
+        if row is None:
+            return {
+                "reason": "projection_account_missing",
+                "account_id": account_id,
+            }
+        if row.generation != state.generation:
+            return {
+                "reason": "projection_generation_mismatch",
+                "account_id": account_id,
+                "state_generation": state.generation,
+                "row_generation": row.generation,
+            }
+        if Decimal(row.balance) != expected_balance:
+            return {
+                "reason": "projection_account_balance_mismatch",
+                "account_id": account_id,
+                "actual": str(row.balance),
+                "expected": str(expected_balance),
+            }
+
+    projected_net_worth = sum((Decimal(row.balance) for row in rows), Decimal("0"))
+    if projected_net_worth != Decimal(state.net_worth):
+        return {
+            "reason": "projection_net_worth_does_not_equal_account_sum",
+            "account_sum": str(projected_net_worth),
+            "state_net_worth": str(state.net_worth),
+        }
+    return None
+
+
 def audit_user(db: Session, user_id: int) -> dict:
     legacy = legacy_summary(db, user_id)
     canonical_legacy = canonical_legacy_summary(db, user_id)
@@ -1339,6 +1439,7 @@ def audit_user(db: Session, user_id: int) -> dict:
     provider_interpretation_divergence = find_first_provider_interpretation_divergence(db, user_id)
     provider_lifecycle_divergence = find_first_provider_lifecycle_divergence(db, user_id)
     provider_sync_divergence = find_first_provider_sync_divergence(db, user_id)
+    projection_divergence = find_first_projection_divergence(db, user_id)
 
     summary_match = legacy == canonical_legacy
     return {
@@ -1355,6 +1456,7 @@ def audit_user(db: Session, user_id: int) -> dict:
             and provider_interpretation_divergence is None
             and provider_lifecycle_divergence is None
             and provider_sync_divergence is None
+            and projection_divergence is None
         ),
         "legacy": {key: str(value) for key, value in asdict(legacy).items()},
         "canonical": {
@@ -1374,6 +1476,7 @@ def audit_user(db: Session, user_id: int) -> dict:
         "provider_interpretation_divergence": provider_interpretation_divergence,
         "provider_lifecycle_divergence": provider_lifecycle_divergence,
         "provider_sync_divergence": provider_sync_divergence,
+        "projection_divergence": projection_divergence,
     }
 
 

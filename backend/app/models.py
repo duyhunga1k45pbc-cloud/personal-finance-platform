@@ -925,3 +925,76 @@ class CommandReceipt(Base):
         default=lambda: datetime.datetime.now(datetime.timezone.utc),
     )
 
+
+
+class FinancialProjectionState(Base):
+    __tablename__ = "financial_projection_state"
+    __table_args__ = (
+        CheckConstraint(
+            "generation >= 1",
+            name="ck_financial_projection_state_generation_positive",
+        ),
+        CheckConstraint(
+            "length(canonical_fingerprint) = 64",
+            name="ck_financial_projection_state_fingerprint_length",
+        ),
+        CheckConstraint(
+            "account_count >= 0",
+            name="ck_financial_projection_state_account_count_nonnegative",
+        ),
+        UniqueConstraint(
+            "user_id",
+            name="uq_financial_projection_state_user",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    generation = Column(Integer, nullable=False, default=1)
+    canonical_fingerprint = Column(String(64), nullable=False)
+    total_income = Column(Numeric(18, 2), nullable=False, default=0)
+    total_expense = Column(Numeric(18, 2), nullable=False, default=0)
+    economic_balance = Column(Numeric(18, 2), nullable=False, default=0)
+    net_worth = Column(Numeric(18, 2), nullable=False, default=0)
+    account_count = Column(Integer, nullable=False, default=0)
+    rebuilt_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.datetime.now(datetime.timezone.utc),
+    )
+
+
+class FinancialAccountBalanceProjection(Base):
+    __tablename__ = "financial_account_balance_projections"
+    __table_args__ = (
+        CheckConstraint(
+            "generation >= 1",
+            name="ck_financial_account_balance_projections_generation_positive",
+        ),
+        UniqueConstraint(
+            "user_id",
+            "account_id",
+            name="uq_financial_account_balance_projections_user_account",
+        ),
+        Index(
+            "ix_financial_account_balance_projections_user_generation",
+            "user_id",
+            "generation",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    account_id = Column(
+        Integer,
+        ForeignKey("financial_accounts.id"),
+        nullable=False,
+        index=True,
+    )
+    generation = Column(Integer, nullable=False)
+    balance = Column(Numeric(18, 2), nullable=False, default=0)
+    rebuilt_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.datetime.now(datetime.timezone.utc),
+    )
