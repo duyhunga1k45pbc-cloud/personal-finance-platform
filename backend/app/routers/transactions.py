@@ -11,6 +11,7 @@ from app.canonical_service import (
     sync_canonical_from_legacy_transaction,
     void_canonical_with_expected_version,
 )
+from app.credit_card_service import validate_transaction_account_semantics
 from app.command_service import (
     IdempotencyConflictError,
     add_command_receipt,
@@ -271,6 +272,10 @@ def create_transaction(
         current_user.id,
         transaction.account_id,
     )
+    try:
+        validate_transaction_account_semantics(account, transaction.type)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     new_item = Transaction(
         amount=transaction.amount,
@@ -359,14 +364,21 @@ def update_transaction(
     if transaction is None:
         raise HTTPException(status_code=404, detail="Transaction not found")
 
-    account_id = transaction.account_id
-    if transaction_update.account_id is not None:
-        account = _resolve_owned_account(
-            db,
-            current_user.id,
-            transaction_update.account_id,
-        )
-        account_id = account.id
+    requested_account_id = (
+        transaction_update.account_id
+        if transaction_update.account_id is not None
+        else transaction.account_id
+    )
+    account = _resolve_owned_account(
+        db,
+        current_user.id,
+        requested_account_id,
+    )
+    account_id = account.id
+    try:
+        validate_transaction_account_semantics(account, transaction_update.type)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     try:
         event = correct_legacy_transaction_with_expected_version(

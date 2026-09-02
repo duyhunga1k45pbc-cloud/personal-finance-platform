@@ -6,6 +6,7 @@ from decimal import Decimal
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.credit_card_service import validate_transaction_account_semantics
 from app.models import (
     FinancialAccount,
     FinancialEvent,
@@ -34,7 +35,9 @@ def _signed_amount(transaction: Transaction) -> Decimal:
     raise ValueError(f"Unsupported legacy transaction type: {transaction.type}")
 
 
-def _validate_transaction_ownership(db: Session, transaction: Transaction) -> None:
+def _validate_transaction_ownership(
+    db: Session, transaction: Transaction
+) -> FinancialAccount:
     account = (
         db.query(FinancialAccount)
         .filter(FinancialAccount.id == transaction.account_id)
@@ -44,6 +47,8 @@ def _validate_transaction_ownership(db: Session, transaction: Transaction) -> No
         raise ValueError("Transaction account does not exist")
     if account.user_id != transaction.user_id:
         raise ValueError("Transaction owner does not match account owner")
+    validate_transaction_account_semantics(account, transaction.type)
+    return account
 
 
 def snapshot_financial_event(db: Session, event: FinancialEvent) -> dict:
@@ -396,6 +401,7 @@ def correct_legacy_transaction_with_expected_version(
     )
     if account is None or account.user_id != transaction.user_id:
         raise ValueError("Transaction owner does not match account owner")
+    validate_transaction_account_semantics(account, transaction_type)
 
     event = (
         db.query(FinancialEvent)

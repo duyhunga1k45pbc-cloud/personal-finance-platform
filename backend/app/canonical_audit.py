@@ -247,12 +247,74 @@ def find_first_transfer_divergence(db: Session, user_id: int) -> dict | None:
     return None
 
 
+
+def find_first_credit_card_divergence(db: Session, user_id: int) -> dict | None:
+    """Validate V1 credit-card accounting semantics.
+
+    A credit-card purchase is an EXPENSE with a negative card entry (liability
+    increases). Repayments are TRANSFER events, so they never count as a second
+    expense. Direct INCOME on a credit-card account is not valid V1 semantics.
+    """
+
+    rows = (
+        db.query(FinancialEvent, FinancialEventEntry, FinancialAccount)
+        .join(
+            FinancialEventEntry,
+            FinancialEventEntry.financial_event_id == FinancialEvent.id,
+        )
+        .join(
+            FinancialAccount,
+            FinancialAccount.id == FinancialEventEntry.account_id,
+        )
+        .filter(
+            FinancialEvent.user_id == user_id,
+            FinancialEvent.lifecycle_state == "ACTIVE",
+            FinancialAccount.user_id == user_id,
+            FinancialAccount.account_type == "CREDIT_CARD",
+        )
+        .order_by(FinancialEvent.id.asc(), FinancialEventEntry.id.asc())
+        .all()
+    )
+
+    for event, entry, account in rows:
+        amount = Decimal(entry.amount)
+        if event.event_type == "INCOME":
+            return {
+                "financial_event_id": event.id,
+                "account_id": account.id,
+                "reason": "income_on_credit_card",
+            }
+
+        if event.event_type == "EXPENSE":
+            entries = (
+                db.query(FinancialEventEntry)
+                .filter(FinancialEventEntry.financial_event_id == event.id)
+                .all()
+            )
+            if len(entries) != 1:
+                return {
+                    "financial_event_id": event.id,
+                    "account_id": account.id,
+                    "reason": "credit_card_expense_entry_count_mismatch",
+                    "entry_count": len(entries),
+                }
+            if amount >= 0:
+                return {
+                    "financial_event_id": event.id,
+                    "account_id": account.id,
+                    "reason": "credit_card_purchase_not_liability_increase",
+                    "amount": str(amount),
+                }
+
+    return None
+
 def audit_user(db: Session, user_id: int) -> dict:
     legacy = legacy_summary(db, user_id)
     canonical = canonical_summary(db, user_id)
     first_divergence = find_first_divergence(db, user_id)
     history_divergence = find_first_history_divergence(db, user_id)
     transfer_divergence = find_first_transfer_divergence(db, user_id)
+    credit_card_divergence = find_first_credit_card_divergence(db, user_id)
 
     summary_match = legacy == canonical
     return {
@@ -262,6 +324,7 @@ def audit_user(db: Session, user_id: int) -> dict:
             and first_divergence is None
             and history_divergence is None
             and transfer_divergence is None
+            and credit_card_divergence is None
         ),
         "legacy": {key: str(value) for key, value in asdict(legacy).items()},
         "canonical": {
@@ -271,6 +334,7 @@ def audit_user(db: Session, user_id: int) -> dict:
         "first_divergence": first_divergence,
         "history_divergence": history_divergence,
         "transfer_divergence": transfer_divergence,
+        "credit_card_divergence": credit_card_divergence,
     }
 
 
