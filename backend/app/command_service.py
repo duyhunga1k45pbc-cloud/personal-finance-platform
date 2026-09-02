@@ -81,13 +81,15 @@ def add_command_receipt(
     transaction_id: int | None = None,
     financial_event_id: int | None = None,
     reconciliation_id: int | None = None,
+    provider_connection_id: int | None = None,
+    external_evidence_id: int | None = None,
     response_status: int,
     response_body: dict[str, Any],
 ) -> CommandReceipt:
-    targets = [transaction_id, financial_event_id, reconciliation_id]
+    targets = [transaction_id, financial_event_id, reconciliation_id, provider_connection_id, external_evidence_id]
     if sum(value is not None for value in targets) != 1:
         raise ValueError(
-            "Command receipt must reference exactly one transaction, financial event, or reconciliation"
+            "Command receipt must reference exactly one transaction, financial event, reconciliation, provider connection, or external evidence"
         )
 
     receipt = CommandReceipt(
@@ -98,6 +100,8 @@ def add_command_receipt(
         transaction_id=transaction_id,
         financial_event_id=financial_event_id,
         reconciliation_id=reconciliation_id,
+        provider_connection_id=provider_connection_id,
+        external_evidence_id=external_evidence_id,
         response_status=response_status,
         response_body=jsonable_encoder(response_body),
     )

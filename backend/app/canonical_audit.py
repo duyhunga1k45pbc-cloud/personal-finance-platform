@@ -19,9 +19,13 @@ from app.models import (
     FinancialEventLink,
     ReconciliationCase,
     ReconciliationHistory,
+    ProviderConnection,
+    ExternalTransaction,
+    ExternalTransactionEvidence,
     Transaction,
     User,
 )
+from app.provider_service import hash_raw_payload
 from app.reconciliation_service import snapshot_reconciliation
 
 
@@ -684,6 +688,79 @@ def find_first_reconciliation_divergence(db: Session, user_id: int) -> dict | No
     return None
 
 
+
+def find_first_provider_evidence_divergence(db: Session, user_id: int) -> dict | None:
+    transactions = (
+        db.query(ExternalTransaction)
+        .filter(ExternalTransaction.user_id == user_id)
+        .order_by(ExternalTransaction.id.asc())
+        .all()
+    )
+
+    for transaction in transactions:
+        connection = (
+            db.query(ProviderConnection)
+            .filter(ProviderConnection.id == transaction.provider_connection_id)
+            .one_or_none()
+        )
+        if connection is None:
+            return {
+                "external_transaction_record_id": transaction.id,
+                "reason": "provider_connection_missing",
+            }
+        if connection.user_id != user_id:
+            return {
+                "external_transaction_record_id": transaction.id,
+                "reason": "provider_connection_owner_mismatch",
+                "transaction_user_id": transaction.user_id,
+                "connection_user_id": connection.user_id,
+            }
+        if not transaction.external_transaction_id.strip():
+            return {
+                "external_transaction_record_id": transaction.id,
+                "reason": "external_transaction_identity_blank",
+            }
+
+        evidence_rows = (
+            db.query(ExternalTransactionEvidence)
+            .filter(
+                ExternalTransactionEvidence.external_transaction_record_id == transaction.id
+            )
+            .order_by(ExternalTransactionEvidence.id.asc())
+            .all()
+        )
+        if not evidence_rows:
+            return {
+                "external_transaction_record_id": transaction.id,
+                "reason": "external_transaction_missing_raw_evidence",
+            }
+
+        for evidence in evidence_rows:
+            if evidence.user_id != user_id:
+                return {
+                    "external_transaction_record_id": transaction.id,
+                    "evidence_id": evidence.id,
+                    "reason": "external_evidence_owner_mismatch",
+                }
+            if evidence.provider_connection_id != transaction.provider_connection_id:
+                return {
+                    "external_transaction_record_id": transaction.id,
+                    "evidence_id": evidence.id,
+                    "reason": "external_evidence_connection_mismatch",
+                }
+            expected_hash = hash_raw_payload(evidence.raw_payload)
+            if evidence.payload_sha256 != expected_hash:
+                return {
+                    "external_transaction_record_id": transaction.id,
+                    "evidence_id": evidence.id,
+                    "reason": "external_evidence_payload_hash_mismatch",
+                    "expected": expected_hash,
+                    "actual": evidence.payload_sha256,
+                }
+
+    return None
+
+
 def audit_user(db: Session, user_id: int) -> dict:
     legacy = legacy_summary(db, user_id)
     canonical_legacy = canonical_legacy_summary(db, user_id)
@@ -694,6 +771,7 @@ def audit_user(db: Session, user_id: int) -> dict:
     credit_card_divergence = find_first_credit_card_divergence(db, user_id)
     causal_divergence = find_first_causal_divergence(db, user_id)
     reconciliation_divergence = find_first_reconciliation_divergence(db, user_id)
+    provider_evidence_divergence = find_first_provider_evidence_divergence(db, user_id)
 
     summary_match = legacy == canonical_legacy
     return {
@@ -706,6 +784,7 @@ def audit_user(db: Session, user_id: int) -> dict:
             and credit_card_divergence is None
             and causal_divergence is None
             and reconciliation_divergence is None
+            and provider_evidence_divergence is None
         ),
         "legacy": {key: str(value) for key, value in asdict(legacy).items()},
         "canonical": {
@@ -721,6 +800,7 @@ def audit_user(db: Session, user_id: int) -> dict:
         "credit_card_divergence": credit_card_divergence,
         "causal_divergence": causal_divergence,
         "reconciliation_divergence": reconciliation_divergence,
+        "provider_evidence_divergence": provider_evidence_divergence,
     }
 
 

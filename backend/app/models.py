@@ -415,11 +415,100 @@ class ReconciliationHistory(Base):
     )
 
 
+class ProviderConnection(Base):
+    __tablename__ = "provider_connections"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "provider_name",
+            "external_account_id",
+            name="uq_provider_connections_user_provider_account",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    provider_name = Column(String(100), nullable=False)
+    external_account_id = Column(String(255), nullable=False)
+    display_name = Column(String(255), nullable=True)
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.datetime.now(datetime.timezone.utc),
+    )
+
+
+class ExternalTransaction(Base):
+    __tablename__ = "external_transactions"
+    __table_args__ = (
+        UniqueConstraint(
+            "provider_connection_id",
+            "external_transaction_id",
+            name="uq_external_transactions_connection_external_id",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    provider_connection_id = Column(
+        Integer,
+        ForeignKey("provider_connections.id"),
+        nullable=False,
+        index=True,
+    )
+    external_transaction_id = Column(String(255), nullable=False)
+    first_observed_at = Column(DateTime(timezone=True), nullable=False)
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.datetime.now(datetime.timezone.utc),
+    )
+
+
+class ExternalTransactionEvidence(Base):
+    __tablename__ = "external_transaction_evidence"
+    __table_args__ = (
+        CheckConstraint(
+            "length(payload_sha256) = 64",
+            name="ck_external_evidence_sha256_length",
+        ),
+        UniqueConstraint(
+            "external_transaction_record_id",
+            "payload_sha256",
+            "observed_at",
+            name="uq_external_evidence_exact_observation",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    provider_connection_id = Column(
+        Integer,
+        ForeignKey("provider_connections.id"),
+        nullable=False,
+        index=True,
+    )
+    external_transaction_record_id = Column(
+        Integer,
+        ForeignKey("external_transactions.id"),
+        nullable=False,
+        index=True,
+    )
+    observed_at = Column(DateTime(timezone=True), nullable=False)
+    raw_payload = Column(JSON, nullable=False)
+    payload_sha256 = Column(String(64), nullable=False)
+    recorded_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.datetime.now(datetime.timezone.utc),
+    )
+
+
 class CommandReceipt(Base):
     __tablename__ = "command_receipts"
     __table_args__ = (
         CheckConstraint(
-            "command_type IN ('CREATE_TRANSACTION', 'UPDATE_TRANSACTION', 'DELETE_TRANSACTION', 'CREATE_TRANSFER', 'CREATE_REFUND', 'CREATE_REVERSAL', 'CREATE_RECONCILIATION', 'RESOLVE_RECONCILIATION', 'CONFIRM_RECONCILIATION_ADJUSTMENT')",
+            "command_type IN ('CREATE_TRANSACTION', 'UPDATE_TRANSACTION', 'DELETE_TRANSACTION', 'CREATE_TRANSFER', 'CREATE_REFUND', 'CREATE_REVERSAL', 'CREATE_RECONCILIATION', 'RESOLVE_RECONCILIATION', 'CONFIRM_RECONCILIATION_ADJUSTMENT', 'CREATE_PROVIDER_CONNECTION', 'INGEST_EXTERNAL_EVIDENCE')",
             name="ck_command_receipts_command_type",
         ),
         UniqueConstraint(
@@ -429,9 +518,11 @@ class CommandReceipt(Base):
             name="uq_command_receipts_user_command_key",
         ),
         CheckConstraint(
-            "(transaction_id IS NOT NULL AND financial_event_id IS NULL AND reconciliation_id IS NULL) OR "
-            "(transaction_id IS NULL AND financial_event_id IS NOT NULL AND reconciliation_id IS NULL) OR "
-            "(transaction_id IS NULL AND financial_event_id IS NULL AND reconciliation_id IS NOT NULL)",
+            "(transaction_id IS NOT NULL AND financial_event_id IS NULL AND reconciliation_id IS NULL AND provider_connection_id IS NULL AND external_evidence_id IS NULL) OR "
+            "(transaction_id IS NULL AND financial_event_id IS NOT NULL AND reconciliation_id IS NULL AND provider_connection_id IS NULL AND external_evidence_id IS NULL) OR "
+            "(transaction_id IS NULL AND financial_event_id IS NULL AND reconciliation_id IS NOT NULL AND provider_connection_id IS NULL AND external_evidence_id IS NULL) OR "
+            "(transaction_id IS NULL AND financial_event_id IS NULL AND reconciliation_id IS NULL AND provider_connection_id IS NOT NULL AND external_evidence_id IS NULL) OR "
+            "(transaction_id IS NULL AND financial_event_id IS NULL AND reconciliation_id IS NULL AND provider_connection_id IS NULL AND external_evidence_id IS NOT NULL)",
             name="ck_command_receipts_exactly_one_target",
         ),
         Index(
@@ -461,6 +552,18 @@ class CommandReceipt(Base):
     reconciliation_id = Column(
         Integer,
         ForeignKey("reconciliation_cases.id"),
+        nullable=True,
+        index=True,
+    )
+    provider_connection_id = Column(
+        Integer,
+        ForeignKey("provider_connections.id"),
+        nullable=True,
+        index=True,
+    )
+    external_evidence_id = Column(
+        Integer,
+        ForeignKey("external_transaction_evidence.id"),
         nullable=True,
         index=True,
     )

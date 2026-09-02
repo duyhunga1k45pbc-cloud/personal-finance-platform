@@ -1,6 +1,6 @@
 from datetime import datetime
 from decimal import Decimal
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
@@ -93,3 +93,19 @@ class AdjustmentConfirm(BaseModel):
 
     confirm: Literal[True]
     reason: str = Field(min_length=3, max_length=255)
+
+class ProviderConnectionCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    provider_name: str = Field(min_length=1, max_length=100)
+    external_account_id: str = Field(min_length=1, max_length=255)
+    display_name: str | None = Field(default=None, max_length=255)
+
+
+class ExternalTransactionEvidenceCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    external_transaction_id: str = Field(min_length=1, max_length=255)
+    observed_at: datetime | None = None
+    raw_payload: dict[str, Any]
+

@@ -5,7 +5,7 @@ from app import models
 from app.canonical_service import canonical_summary
 from app.database import SessionLocal
 from app.models import User
-from app.routers import accounts, auth, causal_events, reconciliations, transactions, transfers
+from app.routers import accounts, auth, causal_events, providers, reconciliations, transactions, transfers
 from app.routers.auth import get_current_user
 
 app = FastAPI(
@@ -20,6 +20,7 @@ app.include_router(transactions.router)
 app.include_router(transfers.router)
 app.include_router(causal_events.router)
 app.include_router(reconciliations.router)
+app.include_router(providers.router)
 
 
 def get_db():
