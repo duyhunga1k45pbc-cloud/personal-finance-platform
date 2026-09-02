@@ -504,11 +504,93 @@ class ExternalTransactionEvidence(Base):
     )
 
 
+class ProviderNormalizedCandidate(Base):
+    __tablename__ = "provider_normalized_candidates"
+    __table_args__ = (
+        CheckConstraint("amount > 0", name="ck_provider_normalized_candidates_amount_positive"),
+        CheckConstraint("direction IN ('INFLOW', 'OUTFLOW')", name="ck_provider_normalized_candidates_direction"),
+        CheckConstraint("normalized_status IN ('PENDING', 'POSTED', 'REVERSED', 'UNKNOWN')", name="ck_provider_normalized_candidates_status"),
+        UniqueConstraint("source_evidence_id", "normalizer_version", name="uq_provider_normalized_candidate_evidence_version"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    provider_connection_id = Column(Integer, ForeignKey("provider_connections.id"), nullable=False, index=True)
+    external_transaction_record_id = Column(Integer, ForeignKey("external_transactions.id"), nullable=False, index=True)
+    source_evidence_id = Column(Integer, ForeignKey("external_transaction_evidence.id"), nullable=False, index=True)
+    normalizer_version = Column(String(64), nullable=False)
+    amount = Column(Numeric(18, 2), nullable=False)
+    currency = Column(String(3), nullable=False)
+    direction = Column(String(16), nullable=False)
+    normalized_status = Column(String(16), nullable=False)
+    occurred_at = Column(DateTime(timezone=True), nullable=False)
+    description = Column(String(255), nullable=True)
+    provider_status = Column(String(64), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc))
+
+
+class ProviderTransactionInterpretation(Base):
+    __tablename__ = "provider_transaction_interpretations"
+    __table_args__ = (
+        CheckConstraint("state IN ('UNCLASSIFIED', 'CLASSIFIED', 'USER_CONFIRMED')", name="ck_provider_interpretations_state"),
+        CheckConstraint("event_type IS NULL OR event_type IN ('INCOME', 'EXPENSE', 'TRANSFER', 'REFUND', 'REVERSAL')", name="ck_provider_interpretations_event_type"),
+        CheckConstraint("confidence IS NULL OR confidence IN ('INFERRED', 'USER_CONFIRMED')", name="ck_provider_interpretations_confidence"),
+        CheckConstraint("version >= 1", name="ck_provider_interpretations_version_positive"),
+        CheckConstraint(
+            "(state = 'UNCLASSIFIED' AND event_type IS NULL AND account_id IS NULL AND confidence IS NULL AND canonical_event_id IS NULL) OR "
+            "(state = 'CLASSIFIED' AND event_type IS NOT NULL AND account_id IS NULL AND confidence = 'INFERRED' AND canonical_event_id IS NULL) OR "
+            "(state = 'USER_CONFIRMED' AND event_type IS NOT NULL AND account_id IS NOT NULL AND confidence = 'USER_CONFIRMED')",
+            name="ck_provider_interpretations_state_shape",
+        ),
+        CheckConstraint(
+            "canonical_event_id IS NULL OR (state = 'USER_CONFIRMED' AND event_type IN ('INCOME', 'EXPENSE'))",
+            name="ck_provider_interpretations_canonical_materialization_scope",
+        ),
+        UniqueConstraint("external_transaction_record_id", name="uq_provider_interpretations_external_transaction"),
+        UniqueConstraint("canonical_event_id", name="uq_provider_interpretations_canonical_event"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    external_transaction_record_id = Column(Integer, ForeignKey("external_transactions.id"), nullable=False, index=True)
+    normalized_candidate_id = Column(Integer, ForeignKey("provider_normalized_candidates.id"), nullable=False, index=True)
+    state = Column(String(32), nullable=False)
+    event_type = Column(String(32), nullable=True)
+    account_id = Column(Integer, ForeignKey("financial_accounts.id"), nullable=True, index=True)
+    canonical_event_id = Column(Integer, ForeignKey("financial_events.id"), nullable=True, index=True)
+    confidence = Column(String(32), nullable=True)
+    version = Column(Integer, nullable=False, default=1)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc))
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc))
+
+
+class ProviderInterpretationHistory(Base):
+    __tablename__ = "provider_interpretation_history"
+    __table_args__ = (
+        CheckConstraint("interpretation_version >= 1", name="ck_provider_interpretation_history_version_positive"),
+        CheckConstraint("transition_type IN ('NORMALIZED', 'CLASSIFIED', 'USER_CONFIRMED', 'MATERIALIZED')", name="ck_provider_interpretation_history_transition_type"),
+        CheckConstraint("actor_type IN ('SYSTEM', 'USER')", name="ck_provider_interpretation_history_actor_type"),
+        UniqueConstraint("interpretation_id", "interpretation_version", name="uq_provider_interpretation_history_version"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    interpretation_id = Column(Integer, ForeignKey("provider_transaction_interpretations.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    interpretation_version = Column(Integer, nullable=False)
+    transition_type = Column(String(32), nullable=False)
+    actor_type = Column(String(16), nullable=False)
+    actor_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    previous_state = Column(JSON, nullable=True)
+    new_state = Column(JSON, nullable=False)
+    reason = Column(String(255), nullable=True)
+    recorded_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc))
+
+
 class CommandReceipt(Base):
     __tablename__ = "command_receipts"
     __table_args__ = (
         CheckConstraint(
-            "command_type IN ('CREATE_TRANSACTION', 'UPDATE_TRANSACTION', 'DELETE_TRANSACTION', 'CREATE_TRANSFER', 'CREATE_REFUND', 'CREATE_REVERSAL', 'CREATE_RECONCILIATION', 'RESOLVE_RECONCILIATION', 'CONFIRM_RECONCILIATION_ADJUSTMENT', 'CREATE_PROVIDER_CONNECTION', 'INGEST_EXTERNAL_EVIDENCE')",
+            "command_type IN ('CREATE_TRANSACTION', 'UPDATE_TRANSACTION', 'DELETE_TRANSACTION', 'CREATE_TRANSFER', 'CREATE_REFUND', 'CREATE_REVERSAL', 'CREATE_RECONCILIATION', 'RESOLVE_RECONCILIATION', 'CONFIRM_RECONCILIATION_ADJUSTMENT', 'CREATE_PROVIDER_CONNECTION', 'INGEST_EXTERNAL_EVIDENCE', 'NORMALIZE_EXTERNAL_TRANSACTION', 'CLASSIFY_EXTERNAL_TRANSACTION', 'CONFIRM_EXTERNAL_INTERPRETATION')",
             name="ck_command_receipts_command_type",
         ),
         UniqueConstraint(
@@ -518,11 +600,13 @@ class CommandReceipt(Base):
             name="uq_command_receipts_user_command_key",
         ),
         CheckConstraint(
-            "(transaction_id IS NOT NULL AND financial_event_id IS NULL AND reconciliation_id IS NULL AND provider_connection_id IS NULL AND external_evidence_id IS NULL) OR "
-            "(transaction_id IS NULL AND financial_event_id IS NOT NULL AND reconciliation_id IS NULL AND provider_connection_id IS NULL AND external_evidence_id IS NULL) OR "
-            "(transaction_id IS NULL AND financial_event_id IS NULL AND reconciliation_id IS NOT NULL AND provider_connection_id IS NULL AND external_evidence_id IS NULL) OR "
-            "(transaction_id IS NULL AND financial_event_id IS NULL AND reconciliation_id IS NULL AND provider_connection_id IS NOT NULL AND external_evidence_id IS NULL) OR "
-            "(transaction_id IS NULL AND financial_event_id IS NULL AND reconciliation_id IS NULL AND provider_connection_id IS NULL AND external_evidence_id IS NOT NULL)",
+            "(transaction_id IS NOT NULL AND financial_event_id IS NULL AND reconciliation_id IS NULL AND provider_connection_id IS NULL AND external_evidence_id IS NULL AND normalized_candidate_id IS NULL AND provider_interpretation_id IS NULL) OR "
+            "(transaction_id IS NULL AND financial_event_id IS NOT NULL AND reconciliation_id IS NULL AND provider_connection_id IS NULL AND external_evidence_id IS NULL AND normalized_candidate_id IS NULL AND provider_interpretation_id IS NULL) OR "
+            "(transaction_id IS NULL AND financial_event_id IS NULL AND reconciliation_id IS NOT NULL AND provider_connection_id IS NULL AND external_evidence_id IS NULL AND normalized_candidate_id IS NULL AND provider_interpretation_id IS NULL) OR "
+            "(transaction_id IS NULL AND financial_event_id IS NULL AND reconciliation_id IS NULL AND provider_connection_id IS NOT NULL AND external_evidence_id IS NULL AND normalized_candidate_id IS NULL AND provider_interpretation_id IS NULL) OR "
+            "(transaction_id IS NULL AND financial_event_id IS NULL AND reconciliation_id IS NULL AND provider_connection_id IS NULL AND external_evidence_id IS NOT NULL AND normalized_candidate_id IS NULL AND provider_interpretation_id IS NULL) OR "
+            "(transaction_id IS NULL AND financial_event_id IS NULL AND reconciliation_id IS NULL AND provider_connection_id IS NULL AND external_evidence_id IS NULL AND normalized_candidate_id IS NOT NULL AND provider_interpretation_id IS NULL) OR "
+            "(transaction_id IS NULL AND financial_event_id IS NULL AND reconciliation_id IS NULL AND provider_connection_id IS NULL AND external_evidence_id IS NULL AND normalized_candidate_id IS NULL AND provider_interpretation_id IS NOT NULL)",
             name="ck_command_receipts_exactly_one_target",
         ),
         Index(
@@ -564,6 +648,18 @@ class CommandReceipt(Base):
     external_evidence_id = Column(
         Integer,
         ForeignKey("external_transaction_evidence.id"),
+        nullable=True,
+        index=True,
+    )
+    normalized_candidate_id = Column(
+        Integer,
+        ForeignKey("provider_normalized_candidates.id"),
+        nullable=True,
+        index=True,
+    )
+    provider_interpretation_id = Column(
+        Integer,
+        ForeignKey("provider_transaction_interpretations.id"),
         nullable=True,
         index=True,
     )

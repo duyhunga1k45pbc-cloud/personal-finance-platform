@@ -109,3 +109,31 @@ class ExternalTransactionEvidenceCreate(BaseModel):
     observed_at: datetime | None = None
     raw_payload: dict[str, Any]
 
+class ProviderNormalizationCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    evidence_id: int
+    normalizer_version: str = Field(min_length=1, max_length=64)
+    amount: Decimal = Field(gt=0, max_digits=18, decimal_places=2)
+    currency: str = Field(min_length=3, max_length=3)
+    direction: Literal["INFLOW", "OUTFLOW"]
+    normalized_status: Literal["PENDING", "POSTED", "REVERSED", "UNKNOWN"]
+    occurred_at: datetime
+    description: str | None = Field(default=None, max_length=255)
+    provider_status: str | None = Field(default=None, max_length=64)
+
+
+class ProviderClassificationCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    event_type: Literal["INCOME", "EXPENSE", "TRANSFER", "REFUND", "REVERSAL"]
+    reason: str | None = Field(default=None, max_length=255)
+
+
+class ProviderInterpretationConfirm(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    event_type: Literal["INCOME", "EXPENSE", "TRANSFER", "REFUND", "REVERSAL"]
+    account_id: int
+    reason: str | None = Field(default=None, max_length=255)
+

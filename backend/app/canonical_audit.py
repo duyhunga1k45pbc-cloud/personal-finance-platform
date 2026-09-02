@@ -22,9 +22,13 @@ from app.models import (
     ProviderConnection,
     ExternalTransaction,
     ExternalTransactionEvidence,
+    ProviderNormalizedCandidate,
+    ProviderTransactionInterpretation,
+    ProviderInterpretationHistory,
     Transaction,
     User,
 )
+from app.provider_interpretation_service import snapshot_provider_interpretation
 from app.provider_service import hash_raw_payload
 from app.reconciliation_service import snapshot_reconciliation
 
@@ -761,6 +765,103 @@ def find_first_provider_evidence_divergence(db: Session, user_id: int) -> dict |
     return None
 
 
+
+def find_first_provider_interpretation_divergence(db: Session, user_id: int) -> dict | None:
+    candidates = (
+        db.query(ProviderNormalizedCandidate)
+        .filter(ProviderNormalizedCandidate.user_id == user_id)
+        .order_by(ProviderNormalizedCandidate.id.asc())
+        .all()
+    )
+    for candidate in candidates:
+        transaction = db.query(ExternalTransaction).filter(ExternalTransaction.id == candidate.external_transaction_record_id).one_or_none()
+        evidence = db.query(ExternalTransactionEvidence).filter(ExternalTransactionEvidence.id == candidate.source_evidence_id).one_or_none()
+        if transaction is None or evidence is None:
+            return {"normalized_candidate_id": candidate.id, "reason": "normalized_source_missing"}
+        if transaction.user_id != user_id or evidence.user_id != user_id:
+            return {"normalized_candidate_id": candidate.id, "reason": "normalized_source_owner_mismatch"}
+        if candidate.provider_connection_id != transaction.provider_connection_id or candidate.provider_connection_id != evidence.provider_connection_id:
+            return {"normalized_candidate_id": candidate.id, "reason": "normalized_connection_mismatch"}
+        if evidence.external_transaction_record_id != transaction.id:
+            return {"normalized_candidate_id": candidate.id, "reason": "normalized_evidence_transaction_mismatch"}
+        if Decimal(candidate.amount) <= 0:
+            return {"normalized_candidate_id": candidate.id, "reason": "normalized_amount_nonpositive"}
+
+    interpretations = (
+        db.query(ProviderTransactionInterpretation)
+        .filter(ProviderTransactionInterpretation.user_id == user_id)
+        .order_by(ProviderTransactionInterpretation.id.asc())
+        .all()
+    )
+    for interp in interpretations:
+        transaction = db.query(ExternalTransaction).filter(ExternalTransaction.id == interp.external_transaction_record_id).one_or_none()
+        candidate = db.query(ProviderNormalizedCandidate).filter(ProviderNormalizedCandidate.id == interp.normalized_candidate_id).one_or_none()
+        if transaction is None or candidate is None:
+            return {"provider_interpretation_id": interp.id, "reason": "interpretation_source_missing"}
+        if transaction.user_id != user_id or candidate.user_id != user_id:
+            return {"provider_interpretation_id": interp.id, "reason": "interpretation_owner_mismatch"}
+        if candidate.external_transaction_record_id != transaction.id:
+            return {"provider_interpretation_id": interp.id, "reason": "interpretation_candidate_transaction_mismatch"}
+
+        history = (
+            db.query(ProviderInterpretationHistory)
+            .filter(ProviderInterpretationHistory.interpretation_id == interp.id)
+            .order_by(ProviderInterpretationHistory.interpretation_version.asc())
+            .all()
+        )
+        expected_versions = list(range(1, interp.version + 1))
+        actual_versions = [row.interpretation_version for row in history]
+        if actual_versions != expected_versions:
+            return {
+                "provider_interpretation_id": interp.id,
+                "reason": "interpretation_history_version_gap",
+                "expected_versions": expected_versions,
+                "actual_versions": actual_versions,
+            }
+        if not history or history[0].transition_type != "NORMALIZED":
+            return {"provider_interpretation_id": interp.id, "reason": "interpretation_history_does_not_start_normalized"}
+        if history[-1].new_state != snapshot_provider_interpretation(interp):
+            return {"provider_interpretation_id": interp.id, "reason": "interpretation_history_snapshot_mismatch"}
+
+        if interp.state == "UNCLASSIFIED":
+            if interp.event_type is not None or interp.account_id is not None or interp.canonical_event_id is not None:
+                return {"provider_interpretation_id": interp.id, "reason": "unclassified_state_has_semantics"}
+        elif interp.state == "CLASSIFIED":
+            if interp.event_type is None or interp.confidence != "INFERRED" or interp.account_id is not None or interp.canonical_event_id is not None:
+                return {"provider_interpretation_id": interp.id, "reason": "classified_state_shape_invalid"}
+        elif interp.state == "USER_CONFIRMED":
+            if interp.event_type is None or interp.account_id is None or interp.confidence != "USER_CONFIRMED":
+                return {"provider_interpretation_id": interp.id, "reason": "confirmed_state_shape_invalid"}
+        else:
+            return {"provider_interpretation_id": interp.id, "reason": "interpretation_state_invalid"}
+
+        if interp.canonical_event_id is not None:
+            event = db.query(FinancialEvent).filter(FinancialEvent.id == interp.canonical_event_id).one_or_none()
+            if event is None or event.user_id != user_id:
+                return {"provider_interpretation_id": interp.id, "reason": "provider_canonical_event_missing_or_owner_mismatch"}
+            if event.provenance != "PROVIDER" or event.interpretation_state != "USER_CONFIRMED" or event.event_type != interp.event_type:
+                return {"provider_interpretation_id": interp.id, "reason": "provider_canonical_event_semantics_mismatch"}
+            entries = db.query(FinancialEventEntry).filter(FinancialEventEntry.financial_event_id == event.id).all()
+            if len(entries) != 1 or entries[0].account_id != interp.account_id:
+                return {"provider_interpretation_id": interp.id, "reason": "provider_canonical_entry_shape_mismatch"}
+            expected_amount = Decimal(candidate.amount) if interp.event_type == "INCOME" else -Decimal(candidate.amount)
+            if Decimal(entries[0].amount) != expected_amount:
+                return {"provider_interpretation_id": interp.id, "reason": "provider_canonical_amount_mismatch"}
+            if candidate.normalized_status != "POSTED" or candidate.currency != "VND":
+                return {"provider_interpretation_id": interp.id, "reason": "provider_canonical_materialized_from_ineligible_candidate"}
+
+        if (
+            interp.state == "USER_CONFIRMED"
+            and interp.event_type in {"INCOME", "EXPENSE"}
+            and candidate.normalized_status == "POSTED"
+            and candidate.currency == "VND"
+            and interp.canonical_event_id is None
+        ):
+            return {"provider_interpretation_id": interp.id, "reason": "eligible_confirmed_provider_event_not_materialized"}
+
+    return None
+
+
 def audit_user(db: Session, user_id: int) -> dict:
     legacy = legacy_summary(db, user_id)
     canonical_legacy = canonical_legacy_summary(db, user_id)
@@ -772,6 +873,7 @@ def audit_user(db: Session, user_id: int) -> dict:
     causal_divergence = find_first_causal_divergence(db, user_id)
     reconciliation_divergence = find_first_reconciliation_divergence(db, user_id)
     provider_evidence_divergence = find_first_provider_evidence_divergence(db, user_id)
+    provider_interpretation_divergence = find_first_provider_interpretation_divergence(db, user_id)
 
     summary_match = legacy == canonical_legacy
     return {
@@ -785,6 +887,7 @@ def audit_user(db: Session, user_id: int) -> dict:
             and causal_divergence is None
             and reconciliation_divergence is None
             and provider_evidence_divergence is None
+            and provider_interpretation_divergence is None
         ),
         "legacy": {key: str(value) for key, value in asdict(legacy).items()},
         "canonical": {
@@ -801,6 +904,7 @@ def audit_user(db: Session, user_id: int) -> dict:
         "causal_divergence": causal_divergence,
         "reconciliation_divergence": reconciliation_divergence,
         "provider_evidence_divergence": provider_evidence_divergence,
+        "provider_interpretation_divergence": provider_interpretation_divergence,
     }
 
 
