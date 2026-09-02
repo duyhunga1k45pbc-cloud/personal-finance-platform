@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.account_service import get_default_cash_account, get_owned_account
 from app.canonical_service import (
+    CausalDependencyError,
     ConcurrentModificationError,
     correct_legacy_transaction_with_expected_version,
     sync_canonical_from_legacy_transaction,
@@ -111,6 +112,7 @@ def _transaction_response(transaction: Transaction, event: FinancialEvent) -> di
         "type": transaction.type,
         "user_id": transaction.user_id,
         "account_id": transaction.account_id,
+        "canonical_event_id": event.id,
         "canonical_version": event.version,
     }
 
@@ -403,6 +405,9 @@ def update_transaction(
             request_hash=request_hash,
             exc=exc,
         )
+    except CausalDependencyError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     response_body = _transaction_response(transaction, event)
     add_command_receipt(
@@ -488,6 +493,9 @@ def delete_transaction(
             request_hash=request_hash,
             exc=exc,
         )
+    except CausalDependencyError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     response_body = {
         "message": "Transaction deleted successfully",

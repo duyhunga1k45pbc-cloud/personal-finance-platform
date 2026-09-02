@@ -6,6 +6,7 @@ from decimal import Decimal
 from sqlalchemy.orm import Session
 
 from app.canonical_service import (
+    canonical_legacy_summary,
     canonical_summary,
     legacy_summary,
     snapshot_financial_event,
@@ -15,6 +16,7 @@ from app.models import (
     FinancialEvent,
     FinancialEventEntry,
     FinancialEventHistory,
+    FinancialEventLink,
     Transaction,
     User,
 )
@@ -308,15 +310,188 @@ def find_first_credit_card_divergence(db: Session, user_id: int) -> dict | None:
 
     return None
 
+def find_first_causal_divergence(db: Session, user_id: int) -> dict | None:
+    events = (
+        db.query(FinancialEvent)
+        .filter(
+            FinancialEvent.user_id == user_id,
+            FinancialEvent.event_type.in_(["REFUND", "REVERSAL"]),
+        )
+        .order_by(FinancialEvent.id.asc())
+        .all()
+    )
+
+    for child in events:
+        links = (
+            db.query(FinancialEventLink)
+            .filter(FinancialEventLink.from_event_id == child.id)
+            .all()
+        )
+        if len(links) != 1:
+            return {
+                "financial_event_id": child.id,
+                "reason": "causal_link_count_mismatch",
+                "link_count": len(links),
+            }
+        link = links[0]
+        expected_relation = "REFUND_OF" if child.event_type == "REFUND" else "REVERSAL_OF"
+        if link.relation_type != expected_relation:
+            return {
+                "financial_event_id": child.id,
+                "reason": "causal_relation_type_mismatch",
+                "expected": expected_relation,
+                "actual": link.relation_type,
+            }
+        original = (
+            db.query(FinancialEvent)
+            .filter(FinancialEvent.id == link.to_event_id)
+            .one_or_none()
+        )
+        if original is None:
+            return {
+                "financial_event_id": child.id,
+                "reason": "causal_original_missing",
+            }
+        if original.user_id != user_id or child.user_id != original.user_id:
+            return {
+                "financial_event_id": child.id,
+                "reason": "causal_owner_mismatch",
+            }
+        if child.legacy_transaction_id is not None:
+            return {
+                "financial_event_id": child.id,
+                "reason": "causal_child_must_be_canonical_only",
+            }
+
+        child_entries = (
+            db.query(FinancialEventEntry)
+            .filter(FinancialEventEntry.financial_event_id == child.id)
+            .order_by(FinancialEventEntry.account_id.asc())
+            .all()
+        )
+        original_entries = (
+            db.query(FinancialEventEntry)
+            .filter(FinancialEventEntry.financial_event_id == original.id)
+            .order_by(FinancialEventEntry.account_id.asc())
+            .all()
+        )
+
+        if child.event_type == "REFUND":
+            if original.event_type != "EXPENSE":
+                return {
+                    "financial_event_id": child.id,
+                    "reason": "refund_original_not_expense",
+                }
+            if len(child_entries) != 1 or len(original_entries) != 1:
+                return {
+                    "financial_event_id": child.id,
+                    "reason": "refund_entry_count_mismatch",
+                }
+            if child_entries[0].account_id != original_entries[0].account_id:
+                return {
+                    "financial_event_id": child.id,
+                    "reason": "refund_account_mismatch",
+                }
+            if Decimal(child_entries[0].amount) <= 0 or Decimal(original_entries[0].amount) >= 0:
+                return {
+                    "financial_event_id": child.id,
+                    "reason": "refund_direction_invalid",
+                }
+
+        if child.event_type == "REVERSAL":
+            if original.event_type not in {"INCOME", "EXPENSE", "TRANSFER"}:
+                return {
+                    "financial_event_id": child.id,
+                    "reason": "reversal_original_type_invalid",
+                }
+            child_map = {row.account_id: Decimal(row.amount) for row in child_entries}
+            original_map = {row.account_id: Decimal(row.amount) for row in original_entries}
+            if set(child_map) != set(original_map):
+                return {
+                    "financial_event_id": child.id,
+                    "reason": "reversal_accounts_mismatch",
+                }
+            for account_id, amount in original_map.items():
+                if child_map[account_id] != -amount:
+                    return {
+                        "financial_event_id": child.id,
+                        "reason": "reversal_amount_not_exact_inverse",
+                        "account_id": account_id,
+                    }
+
+    originals = (
+        db.query(FinancialEvent)
+        .filter(FinancialEvent.user_id == user_id)
+        .order_by(FinancialEvent.id.asc())
+        .all()
+    )
+    for original in originals:
+        linked = (
+            db.query(FinancialEventLink, FinancialEvent)
+            .join(FinancialEvent, FinancialEvent.id == FinancialEventLink.from_event_id)
+            .filter(
+                FinancialEventLink.to_event_id == original.id,
+                FinancialEvent.lifecycle_state == "ACTIVE",
+            )
+            .all()
+        )
+        refunds = [pair for pair in linked if pair[0].relation_type == "REFUND_OF"]
+        reversals = [pair for pair in linked if pair[0].relation_type == "REVERSAL_OF"]
+        if len(reversals) > 1:
+            return {
+                "financial_event_id": original.id,
+                "reason": "multiple_active_reversals",
+            }
+        if refunds and reversals:
+            return {
+                "financial_event_id": original.id,
+                "reason": "refund_and_reversal_conflict",
+            }
+        if refunds:
+            original_entries = (
+                db.query(FinancialEventEntry)
+                .filter(FinancialEventEntry.financial_event_id == original.id)
+                .all()
+            )
+            if len(original_entries) != 1:
+                return {
+                    "financial_event_id": original.id,
+                    "reason": "refunded_original_entry_count_mismatch",
+                }
+            total_refund = Decimal("0")
+            for _, refund_event in refunds:
+                refund_entries = (
+                    db.query(FinancialEventEntry)
+                    .filter(FinancialEventEntry.financial_event_id == refund_event.id)
+                    .all()
+                )
+                if len(refund_entries) != 1:
+                    return {
+                        "financial_event_id": refund_event.id,
+                        "reason": "refund_entry_count_mismatch",
+                    }
+                total_refund += Decimal(refund_entries[0].amount)
+            if total_refund > -Decimal(original_entries[0].amount):
+                return {
+                    "financial_event_id": original.id,
+                    "reason": "refunds_exceed_original_expense",
+                    "refund_total": str(total_refund),
+                }
+
+    return None
+
+
 def audit_user(db: Session, user_id: int) -> dict:
     legacy = legacy_summary(db, user_id)
-    canonical = canonical_summary(db, user_id)
+    canonical_legacy = canonical_legacy_summary(db, user_id)
+    economic = canonical_summary(db, user_id)
     first_divergence = find_first_divergence(db, user_id)
     history_divergence = find_first_history_divergence(db, user_id)
     transfer_divergence = find_first_transfer_divergence(db, user_id)
     credit_card_divergence = find_first_credit_card_divergence(db, user_id)
+    causal_divergence = find_first_causal_divergence(db, user_id)
 
-    summary_match = legacy == canonical
+    summary_match = legacy == canonical_legacy
     return {
         "user_id": user_id,
         "ok": (
@@ -325,16 +500,21 @@ def audit_user(db: Session, user_id: int) -> dict:
             and history_divergence is None
             and transfer_divergence is None
             and credit_card_divergence is None
+            and causal_divergence is None
         ),
         "legacy": {key: str(value) for key, value in asdict(legacy).items()},
         "canonical": {
-            key: str(value) for key, value in asdict(canonical).items()
+            key: str(value) for key, value in asdict(canonical_legacy).items()
+        },
+        "economic_summary": {
+            key: str(value) for key, value in asdict(economic).items()
         },
         "summary_match": summary_match,
         "first_divergence": first_divergence,
         "history_divergence": history_divergence,
         "transfer_divergence": transfer_divergence,
         "credit_card_divergence": credit_card_divergence,
+        "causal_divergence": causal_divergence,
     }
 
 

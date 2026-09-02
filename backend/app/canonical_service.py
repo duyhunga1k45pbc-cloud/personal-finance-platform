@@ -12,6 +12,7 @@ from app.models import (
     FinancialEvent,
     FinancialEventEntry,
     FinancialEventHistory,
+    FinancialEventLink,
     Transaction,
 )
 
@@ -178,6 +179,7 @@ def sync_canonical_from_legacy_transaction(
     if event.lifecycle_state != "ACTIVE":
         raise ValueError("Cannot mutate a voided canonical event")
 
+    _assert_no_causal_dependents(db, event)
     previous_state = snapshot_financial_event(db, event)
 
     event.event_type = transaction.type.upper()
@@ -238,6 +240,7 @@ def void_canonical_for_legacy_transaction(
     if event.lifecycle_state == "VOIDED":
         return event
 
+    _assert_no_causal_dependents(db, event)
     previous_state = snapshot_financial_event(db, event)
     event.lifecycle_state = "VOIDED"
     event.version += 1
@@ -285,7 +288,45 @@ def legacy_summary(db: Session, user_id: int) -> FinancialSummary:
     )
 
 
+def canonical_legacy_summary(db: Session, user_id: int) -> FinancialSummary:
+    """Canonical projection limited to legacy-backed INCOME/EXPENSE events.
+
+    This remains the migration-parity oracle after canonical-only events such as
+    REFUND and REVERSAL are introduced. Full business reporting must use
+    canonical_summary().
+    """
+    rows = (
+        db.query(FinancialEvent, FinancialEventEntry)
+        .join(
+            FinancialEventEntry,
+            FinancialEventEntry.financial_event_id == FinancialEvent.id,
+        )
+        .filter(
+            FinancialEvent.user_id == user_id,
+            FinancialEvent.legacy_transaction_id.isnot(None),
+            FinancialEvent.lifecycle_state == "ACTIVE",
+            FinancialEvent.event_type.in_(["INCOME", "EXPENSE"]),
+        )
+        .all()
+    )
+    income = Decimal("0")
+    expense_signed = Decimal("0")
+    for event, entry in rows:
+        amount = Decimal(entry.amount)
+        if event.event_type == "INCOME":
+            income += amount
+        elif event.event_type == "EXPENSE":
+            expense_signed += amount
+    expense = -expense_signed
+    return FinancialSummary(
+        total_income=income,
+        total_expense=expense,
+        balance=income - expense,
+    )
+
+
 def canonical_summary(db: Session, user_id: int) -> FinancialSummary:
+    """Full effective economic summary, including refunds and reversals."""
     income_value = (
         db.query(func.coalesce(func.sum(FinancialEventEntry.amount), 0))
         .join(
@@ -314,12 +355,105 @@ def canonical_summary(db: Session, user_id: int) -> FinancialSummary:
     )
 
     income = Decimal(income_value or 0)
-    expense = -Decimal(expense_signed_value or 0)
+    expense_signed = Decimal(expense_signed_value or 0)
+
+    refunds = (
+        db.query(FinancialEvent, FinancialEventLink)
+        .join(
+            FinancialEventLink,
+            FinancialEventLink.from_event_id == FinancialEvent.id,
+        )
+        .filter(
+            FinancialEvent.user_id == user_id,
+            FinancialEvent.event_type == "REFUND",
+            FinancialEvent.lifecycle_state == "ACTIVE",
+            FinancialEventLink.relation_type == "REFUND_OF",
+        )
+        .all()
+    )
+    for refund, link in refunds:
+        original = (
+            db.query(FinancialEvent)
+            .filter(
+                FinancialEvent.id == link.to_event_id,
+                FinancialEvent.user_id == user_id,
+                FinancialEvent.event_type == "EXPENSE",
+            )
+            .one_or_none()
+        )
+        if original is None:
+            continue
+        expense_signed += sum(
+            (
+                Decimal(row.amount)
+                for row in db.query(FinancialEventEntry)
+                .filter(FinancialEventEntry.financial_event_id == refund.id)
+                .all()
+            ),
+            Decimal("0"),
+        )
+
+    reversals = (
+        db.query(FinancialEvent, FinancialEventLink)
+        .join(
+            FinancialEventLink,
+            FinancialEventLink.from_event_id == FinancialEvent.id,
+        )
+        .filter(
+            FinancialEvent.user_id == user_id,
+            FinancialEvent.event_type == "REVERSAL",
+            FinancialEvent.lifecycle_state == "ACTIVE",
+            FinancialEventLink.relation_type == "REVERSAL_OF",
+        )
+        .all()
+    )
+    for reversal, link in reversals:
+        original = (
+            db.query(FinancialEvent)
+            .filter(
+                FinancialEvent.id == link.to_event_id,
+                FinancialEvent.user_id == user_id,
+            )
+            .one_or_none()
+        )
+        if original is None:
+            continue
+        reversal_sum = sum(
+            (
+                Decimal(row.amount)
+                for row in db.query(FinancialEventEntry)
+                .filter(FinancialEventEntry.financial_event_id == reversal.id)
+                .all()
+            ),
+            Decimal("0"),
+        )
+        if original.event_type == "INCOME":
+            income += reversal_sum
+        elif original.event_type == "EXPENSE":
+            expense_signed += reversal_sum
+
+    expense = -expense_signed
     return FinancialSummary(
         total_income=income,
         total_expense=expense,
         balance=income - expense,
     )
+
+
+class CausalDependencyError(RuntimeError):
+    pass
+
+
+def _assert_no_causal_dependents(db: Session, event: FinancialEvent) -> None:
+    dependent = (
+        db.query(FinancialEventLink.id)
+        .filter(FinancialEventLink.to_event_id == event.id)
+        .first()
+    )
+    if dependent is not None:
+        raise CausalDependencyError(
+            "Cannot mutate an event after REFUND_OF or REVERSAL_OF dependents exist"
+        )
 
 
 class ConcurrentModificationError(RuntimeError):
@@ -413,6 +547,7 @@ def correct_legacy_transaction_with_expected_version(
     if event.user_id != transaction.user_id:
         raise ValueError("Canonical event owner diverged from legacy owner")
 
+    _assert_no_causal_dependents(db, event)
     _claim_expected_version(db, event, expected_version=expected_version)
 
     entries = (
@@ -488,6 +623,7 @@ def void_canonical_with_expected_version(
     if event is None:
         raise ValueError("Canonical event does not exist")
 
+    _assert_no_causal_dependents(db, event)
     _claim_expected_version(db, event, expected_version=expected_version)
 
     previous_state = snapshot_financial_event(db, event)

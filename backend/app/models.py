@@ -192,6 +192,49 @@ class FinancialEventEntry(Base):
     )
 
 
+class FinancialEventLink(Base):
+    __tablename__ = "financial_event_links"
+    __table_args__ = (
+        CheckConstraint(
+            "relation_type IN ('REFUND_OF', 'REVERSAL_OF')",
+            name="ck_financial_event_links_relation_type",
+        ),
+        CheckConstraint(
+            "from_event_id <> to_event_id",
+            name="ck_financial_event_links_not_self",
+        ),
+        UniqueConstraint(
+            "from_event_id",
+            name="uq_financial_event_links_from_event",
+        ),
+        Index(
+            "ix_financial_event_links_to_relation",
+            "to_event_id",
+            "relation_type",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    from_event_id = Column(
+        Integer,
+        ForeignKey("financial_events.id"),
+        nullable=False,
+        index=True,
+    )
+    to_event_id = Column(
+        Integer,
+        ForeignKey("financial_events.id"),
+        nullable=False,
+        index=True,
+    )
+    relation_type = Column(String, nullable=False)
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.datetime.now(datetime.timezone.utc),
+    )
+
+
 class FinancialEventHistory(Base):
     __tablename__ = "financial_event_history"
     __table_args__ = (
@@ -244,7 +287,7 @@ class CommandReceipt(Base):
     __tablename__ = "command_receipts"
     __table_args__ = (
         CheckConstraint(
-            "command_type IN ('CREATE_TRANSACTION', 'UPDATE_TRANSACTION', 'DELETE_TRANSACTION', 'CREATE_TRANSFER')",
+            "command_type IN ('CREATE_TRANSACTION', 'UPDATE_TRANSACTION', 'DELETE_TRANSACTION', 'CREATE_TRANSFER', 'CREATE_REFUND', 'CREATE_REVERSAL')",
             name="ck_command_receipts_command_type",
         ),
         UniqueConstraint(

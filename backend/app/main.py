@@ -2,10 +2,10 @@ from fastapi import Depends, FastAPI
 from sqlalchemy.orm import Session
 
 from app import models
-from app.canonical_service import legacy_summary
+from app.canonical_service import canonical_summary
 from app.database import SessionLocal
 from app.models import User
-from app.routers import accounts, auth, transactions, transfers
+from app.routers import accounts, auth, causal_events, transactions, transfers
 from app.routers.auth import get_current_user
 
 app = FastAPI(
@@ -18,6 +18,7 @@ app.include_router(auth.router)
 app.include_router(accounts.router)
 app.include_router(transactions.router)
 app.include_router(transfers.router)
+app.include_router(causal_events.router)
 
 
 def get_db():
@@ -38,7 +39,7 @@ def get_summary(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    summary = legacy_summary(db, current_user.id)
+    summary = canonical_summary(db, current_user.id)
     return {
         "total_income": summary.total_income,
         "total_expense": summary.total_expense,

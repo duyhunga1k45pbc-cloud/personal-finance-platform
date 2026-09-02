@@ -54,3 +54,20 @@ class TransferCreate(BaseModel):
     to_account_id: int
     description: str | None = Field(default=None, max_length=255)
     occurred_at: datetime | None = None
+
+
+class RefundCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    original_event_id: int
+    amount: Decimal = Field(gt=0, max_digits=18, decimal_places=2)
+    description: str | None = Field(default=None, max_length=255)
+    occurred_at: datetime | None = None
+
+
+class ReversalCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    original_event_id: int
+    description: str | None = Field(default=None, max_length=255)
+    occurred_at: datetime | None = None
