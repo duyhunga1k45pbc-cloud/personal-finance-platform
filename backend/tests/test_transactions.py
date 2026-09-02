@@ -1,9 +1,11 @@
+from decimal import Decimal
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app.database import Base, engine
+from app.database import Base, SessionLocal, engine
+from app.models import Transaction
 
 
 client = TestClient(app)
@@ -23,7 +25,6 @@ def get_auth_headers():
             "password": password,
         },
     )
-
     login_response = client.post(
         "/auth/login",
         json={
@@ -49,7 +50,6 @@ def test_transactions_requires_auth():
 
 def test_create_transaction():
     headers = get_auth_headers()
-
     response = client.post(
         "/transactions",
         json={
@@ -68,6 +68,31 @@ def test_create_transaction():
     assert data["description"] == "test lunch"
     assert data["category"] == "food"
     assert data["type"] == "expense"
+    assert data["account_id"] is not None
+
+
+def test_amount_is_stored_as_decimal_numeric():
+    headers = get_auth_headers()
+    response = client.post(
+        "/transactions",
+        json={
+            "amount": "12345.67",
+            "description": "decimal test",
+            "category": "test",
+            "type": "expense",
+        },
+        headers=headers,
+    )
+    assert response.status_code == 200
+
+    transaction_id = response.json()["id"]
+    db = SessionLocal()
+    try:
+        row = db.query(Transaction).filter(Transaction.id == transaction_id).one()
+        assert isinstance(row.amount, Decimal)
+        assert row.amount == Decimal("12345.67")
+    finally:
+        db.close()
 
 
 def test_create_transaction_with_invalid_amount():
@@ -89,7 +114,6 @@ def test_create_transaction_with_invalid_amount():
 
 def test_create_transaction_with_invalid_type():
     headers = get_auth_headers()
-
     response = client.post(
         "/transactions",
         json={

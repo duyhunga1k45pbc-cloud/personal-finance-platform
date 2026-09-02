@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from app.account_service import create_default_cash_account
 from app.database import SessionLocal
 from app.models import User
 from app.schemas import UserCreate, UserLogin, Token
@@ -10,7 +11,6 @@ router = APIRouter(
     prefix="/auth",
     tags=["auth"]
 )
-
 security = HTTPBearer()
 def get_db():
     db = SessionLocal()
@@ -31,7 +31,6 @@ def get_current_user(
         raise HTTPException(status_code=401, detail="Invalid token")
 
     email = payload.get("sub")
-
     if email is None:
         raise HTTPException(status_code=401, detail="Invalid token")
 
@@ -44,7 +43,6 @@ def get_current_user(
 @router.post("/register")
 def register(user: UserCreate, db: Session = Depends(get_db)):
     existing_user = db.query(User).filter(User.email == user.email).first()
-
     if existing_user:
         raise HTTPException(
             status_code=400,
@@ -56,7 +54,10 @@ def register(user: UserCreate, db: Session = Depends(get_db)):
         hashed_password=hash_password(user.password)
     )
 
+    # User + default cash account are committed atomically.
     db.add(new_user)
+    db.flush()
+    create_default_cash_account(db, new_user.id)
     db.commit()
     db.refresh(new_user)
 
@@ -65,7 +66,6 @@ def register(user: UserCreate, db: Session = Depends(get_db)):
         "email": new_user.email,
         "message": "User registered successfully"
     }
-
 
 @router.post("/login", response_model=Token)
 def login(user: UserLogin, db: Session = Depends(get_db)):
@@ -82,7 +82,6 @@ def login(user: UserLogin, db: Session = Depends(get_db)):
             status_code=401,
             detail="Invalid email or password"
         )
-
     access_token = create_access_token(
         data={"sub": db_user.email}
     )

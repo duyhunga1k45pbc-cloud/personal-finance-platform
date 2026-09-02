@@ -1,13 +1,32 @@
-
+from decimal import Decimal
 from typing import Literal
-from pydantic import BaseModel, Field, EmailStr
+from pydantic import BaseModel, ConfigDict, Field, EmailStr
 
 
 class TransactionCreate(BaseModel):
-    amount: float = Field(gt=0)
+    amount: Decimal = Field(gt=0, max_digits=18, decimal_places=2)
     description: str
     category: str
     type: Literal["income", "expense"]
+    account_id: int | None = None
+
+
+class FinancialAccountCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    account_type: Literal["BANK", "EWALLET", "CREDIT_CARD", "CASH"]
+    currency: Literal["VND"] = "VND"
+
+
+class FinancialAccountRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    user_id: int
+    name: str
+    account_type: str
+    currency: str
+    is_default: bool
+    version: int
 
 
 class UserCreate(BaseModel):
