@@ -1,6 +1,8 @@
+from datetime import datetime
 from decimal import Decimal
 from typing import Literal
-from pydantic import BaseModel, ConfigDict, Field, EmailStr
+
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
 class TransactionCreate(BaseModel):
@@ -42,3 +44,13 @@ class UserLogin(BaseModel):
 class Token(BaseModel):
     access_token: str
     token_type: str
+
+
+class TransferCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    amount: Decimal = Field(gt=0, max_digits=18, decimal_places=2)
+    from_account_id: int
+    to_account_id: int
+    description: str | None = Field(default=None, max_length=255)
+    occurred_at: datetime | None = None

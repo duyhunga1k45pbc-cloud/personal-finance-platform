@@ -244,7 +244,7 @@ class CommandReceipt(Base):
     __tablename__ = "command_receipts"
     __table_args__ = (
         CheckConstraint(
-            "command_type IN ('CREATE_TRANSACTION', 'UPDATE_TRANSACTION', 'DELETE_TRANSACTION')",
+            "command_type IN ('CREATE_TRANSACTION', 'UPDATE_TRANSACTION', 'DELETE_TRANSACTION', 'CREATE_TRANSFER')",
             name="ck_command_receipts_command_type",
         ),
         UniqueConstraint(
@@ -252,6 +252,11 @@ class CommandReceipt(Base):
             "command_type",
             "idempotency_key",
             name="uq_command_receipts_user_command_key",
+        ),
+        CheckConstraint(
+            "(transaction_id IS NOT NULL AND financial_event_id IS NULL) OR "
+            "(transaction_id IS NULL AND financial_event_id IS NOT NULL)",
+            name="ck_command_receipts_exactly_one_target",
         ),
         Index(
             "ix_command_receipts_user_created",
@@ -268,7 +273,13 @@ class CommandReceipt(Base):
     transaction_id = Column(
         Integer,
         ForeignKey("transactions.id"),
-        nullable=False,
+        nullable=True,
+        index=True,
+    )
+    financial_event_id = Column(
+        Integer,
+        ForeignKey("financial_events.id"),
+        nullable=True,
         index=True,
     )
     response_status = Column(Integer, nullable=False)

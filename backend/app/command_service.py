@@ -78,16 +78,23 @@ def add_command_receipt(
     command_type: str,
     idempotency_key: str,
     request_hash: str,
-    transaction_id: int,
+    transaction_id: int | None = None,
+    financial_event_id: int | None = None,
     response_status: int,
     response_body: dict[str, Any],
 ) -> CommandReceipt:
+    if (transaction_id is None) == (financial_event_id is None):
+        raise ValueError(
+            "Command receipt must reference exactly one transaction or financial event"
+        )
+
     receipt = CommandReceipt(
         user_id=user_id,
         command_type=command_type,
         idempotency_key=idempotency_key,
         request_hash=request_hash,
         transaction_id=transaction_id,
+        financial_event_id=financial_event_id,
         response_status=response_status,
         response_body=jsonable_encoder(response_body),
     )

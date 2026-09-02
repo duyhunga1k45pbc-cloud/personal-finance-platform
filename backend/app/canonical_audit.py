@@ -11,6 +11,7 @@ from app.canonical_service import (
     snapshot_financial_event,
 )
 from app.models import (
+    FinancialAccount,
     FinancialEvent,
     FinancialEventEntry,
     FinancialEventHistory,
@@ -173,11 +174,85 @@ def find_first_history_divergence(db: Session, user_id: int) -> dict | None:
     return None
 
 
+
+def find_first_transfer_divergence(db: Session, user_id: int) -> dict | None:
+    events = (
+        db.query(FinancialEvent)
+        .filter(
+            FinancialEvent.user_id == user_id,
+            FinancialEvent.event_type == "TRANSFER",
+        )
+        .order_by(FinancialEvent.id.asc())
+        .all()
+    )
+
+    for event in events:
+        entries = (
+            db.query(FinancialEventEntry)
+            .filter(FinancialEventEntry.financial_event_id == event.id)
+            .order_by(FinancialEventEntry.id.asc())
+            .all()
+        )
+        if len(entries) != 2:
+            return {
+                "financial_event_id": event.id,
+                "reason": "transfer_entry_count_mismatch",
+                "entry_count": len(entries),
+            }
+
+        account_ids = [entry.account_id for entry in entries]
+        if len(set(account_ids)) != 2:
+            return {
+                "financial_event_id": event.id,
+                "reason": "transfer_accounts_not_distinct",
+            }
+
+        owned_account_ids = {
+            row[0]
+            for row in (
+                db.query(FinancialEventEntry.account_id)
+                .join(
+                    FinancialAccount,
+                    FinancialAccount.id == FinancialEventEntry.account_id,
+                )
+                .filter(
+                    FinancialEventEntry.financial_event_id == event.id,
+                    FinancialAccount.user_id == user_id,
+                )
+                .all()
+            )
+        }
+        if owned_account_ids != set(account_ids):
+            return {
+                "financial_event_id": event.id,
+                "reason": "transfer_account_owner_mismatch",
+            }
+
+        amounts = [Decimal(entry.amount) for entry in entries]
+        if sum(amounts, Decimal("0")) != Decimal("0"):
+            return {
+                "financial_event_id": event.id,
+                "reason": "transfer_not_zero_sum",
+                "amounts": [str(amount) for amount in amounts],
+            }
+        if len([amount for amount in amounts if amount < 0]) != 1 or len(
+            [amount for amount in amounts if amount > 0]
+        ) != 1:
+            return {
+                "financial_event_id": event.id,
+                "reason": "transfer_direction_invalid",
+                "amounts": [str(amount) for amount in amounts],
+            }
+
+    return None
+
+
 def audit_user(db: Session, user_id: int) -> dict:
     legacy = legacy_summary(db, user_id)
     canonical = canonical_summary(db, user_id)
     first_divergence = find_first_divergence(db, user_id)
     history_divergence = find_first_history_divergence(db, user_id)
+    transfer_divergence = find_first_transfer_divergence(db, user_id)
 
     summary_match = legacy == canonical
     return {
@@ -186,6 +261,7 @@ def audit_user(db: Session, user_id: int) -> dict:
             summary_match
             and first_divergence is None
             and history_divergence is None
+            and transfer_divergence is None
         ),
         "legacy": {key: str(value) for key, value in asdict(legacy).items()},
         "canonical": {
@@ -194,6 +270,7 @@ def audit_user(db: Session, user_id: int) -> dict:
         "summary_match": summary_match,
         "first_divergence": first_divergence,
         "history_divergence": history_divergence,
+        "transfer_divergence": transfer_divergence,
     }
 
 
