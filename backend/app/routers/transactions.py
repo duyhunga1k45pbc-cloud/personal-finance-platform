@@ -4,15 +4,16 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.account_service import get_default_cash_account, get_owned_account
+from app.canonical_service import (
+    delete_canonical_for_legacy_transaction,
+    sync_canonical_from_legacy_transaction,
+)
 from app.database import SessionLocal
 from app.models import Transaction, User
-from app.schemas import TransactionCreate
 from app.routers.auth import get_current_user
+from app.schemas import TransactionCreate
 
-router = APIRouter(
-    prefix="/transactions",
-    tags=["transactions"]
-)
+router = APIRouter(prefix="/transactions", tags=["transactions"])
 
 
 def get_db():
@@ -31,7 +32,10 @@ def _resolve_owned_account(
     if account_id is None:
         account = get_default_cash_account(db, user_id)
         if account is None:
-            raise HTTPException(status_code=409, detail="Default cash account is missing")
+            raise HTTPException(
+                status_code=409,
+                detail="Default cash account is missing",
+            )
         return account
 
     account = get_owned_account(db, user_id, account_id)
@@ -47,7 +51,7 @@ def list_transactions(
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=10, ge=1, le=100),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
 ):
     query = db.query(Transaction).filter(Transaction.user_id == current_user.id)
     if type is not None:
@@ -62,28 +66,42 @@ def list_transactions(
         "total": total,
         "skip": skip,
         "limit": limit,
-        "data": transactions
+        "data": transactions,
     }
 
+
 @router.get("/{transaction_id}")
-def get_transaction(transaction_id: int, db: Session = Depends(get_db),current_user: User = Depends(get_current_user)):
-    transaction = db.query(Transaction).filter(
-    Transaction.id == transaction_id,
-    Transaction.user_id == current_user.id
-).first()
+def get_transaction(
+    transaction_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    transaction = (
+        db.query(Transaction)
+        .filter(
+            Transaction.id == transaction_id,
+            Transaction.user_id == current_user.id,
+        )
+        .first()
+    )
 
     if transaction is None:
         raise HTTPException(status_code=404, detail="Transaction not found")
 
     return transaction
 
+
 @router.post("")
 def create_transaction(
     transaction: TransactionCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
 ):
-    account = _resolve_owned_account(db, current_user.id, transaction.account_id)
+    account = _resolve_owned_account(
+        db,
+        current_user.id,
+        transaction.account_id,
+    )
 
     new_item = Transaction(
         amount=transaction.amount,
@@ -91,31 +109,44 @@ def create_transaction(
         category=transaction.category,
         type=transaction.type,
         user_id=current_user.id,
-        account_id=account.id
+        account_id=account.id,
     )
 
+    # Task 2 dual-write: legacy Transaction remains API-compatible while the
+    # canonical event is created in the same database transaction.
     db.add(new_item)
+    db.flush()
+    sync_canonical_from_legacy_transaction(db, new_item)
     db.commit()
     db.refresh(new_item)
 
     return new_item
+
 
 @router.put("/{transaction_id}")
 def update_transaction(
     transaction_id: int,
     transaction_update: TransactionCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
 ):
-    transaction = db.query(Transaction).filter(
-    Transaction.id == transaction_id,
-    Transaction.user_id == current_user.id
-).first()
+    transaction = (
+        db.query(Transaction)
+        .filter(
+            Transaction.id == transaction_id,
+            Transaction.user_id == current_user.id,
+        )
+        .first()
+    )
     if transaction is None:
         raise HTTPException(status_code=404, detail="Transaction not found")
 
     if transaction_update.account_id is not None:
-        account = _resolve_owned_account(db, current_user.id, transaction_update.account_id)
+        account = _resolve_owned_account(
+            db,
+            current_user.id,
+            transaction_update.account_id,
+        )
         transaction.account_id = account.id
 
     transaction.amount = transaction_update.amount
@@ -123,25 +154,38 @@ def update_transaction(
     transaction.category = transaction_update.category
     transaction.type = transaction_update.type
 
+    sync_canonical_from_legacy_transaction(db, transaction)
     db.commit()
     db.refresh(transaction)
 
     return transaction
 
+
 @router.delete("/{transaction_id}")
-def delete_transaction(transaction_id: int, db: Session = Depends(get_db),current_user: User = Depends(get_current_user)):
-    transaction = db.query(Transaction).filter(
-    Transaction.id == transaction_id,
-    Transaction.user_id == current_user.id
-).first()
+def delete_transaction(
+    transaction_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    transaction = (
+        db.query(Transaction)
+        .filter(
+            Transaction.id == transaction_id,
+            Transaction.user_id == current_user.id,
+        )
+        .first()
+    )
 
     if transaction is None:
         raise HTTPException(status_code=404, detail="Transaction not found")
 
-    # Legacy Task 1 behavior. Correction/history semantics come later.
+    # Transitional Task 2 behavior only. Both legacy and canonical mirrors are
+    # deleted atomically so parity remains exact until history/correction
+    # semantics replace destructive CRUD in a later milestone.
+    delete_canonical_for_legacy_transaction(db, transaction_id)
     db.delete(transaction)
     db.commit()
     return {
         "message": "Transaction deleted successfully",
-        "deleted_id": transaction_id
+        "deleted_id": transaction_id,
     }
