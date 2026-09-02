@@ -71,3 +71,25 @@ class ReversalCreate(BaseModel):
     original_event_id: int
     description: str | None = Field(default=None, max_length=255)
     occurred_at: datetime | None = None
+
+
+class ReconciliationCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    account_id: int
+    observed_balance: Decimal = Field(ge=0, max_digits=18, decimal_places=2)
+    observed_at: datetime | None = None
+    note: str | None = Field(default=None, max_length=255)
+
+
+class ReconciliationResolve(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str | None = Field(default=None, max_length=255)
+
+
+class AdjustmentConfirm(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    confirm: Literal[True]
+    reason: str = Field(min_length=3, max_length=255)

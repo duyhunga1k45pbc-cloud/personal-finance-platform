@@ -283,11 +283,143 @@ class FinancialEventHistory(Base):
         default=lambda: datetime.datetime.now(datetime.timezone.utc),
     )
 
+class ReconciliationCase(Base):
+    __tablename__ = "reconciliation_cases"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('UNKNOWN', 'RECONCILED', 'MISMATCH', 'RESOLVED')",
+            name="ck_reconciliation_cases_status",
+        ),
+        CheckConstraint(
+            "resolution_type IS NULL OR resolution_type IN ('REAL_EVENT', 'ADJUSTMENT')",
+            name="ck_reconciliation_cases_resolution_type",
+        ),
+        CheckConstraint(
+            "version >= 1",
+            name="ck_reconciliation_cases_version_positive",
+        ),
+        CheckConstraint(
+            "difference = observed_balance - expected_balance",
+            name="ck_reconciliation_cases_difference_exact",
+        ),
+        CheckConstraint(
+            "status <> 'RECONCILED' OR difference = 0",
+            name="ck_reconciliation_cases_reconciled_zero_difference",
+        ),
+        CheckConstraint(
+            "status <> 'MISMATCH' OR difference <> 0",
+            name="ck_reconciliation_cases_mismatch_nonzero_difference",
+        ),
+        CheckConstraint(
+            "(status = 'RESOLVED' AND resolution_type IS NOT NULL AND resolved_balance IS NOT NULL) OR "
+            "(status <> 'RESOLVED' AND resolution_type IS NULL AND resolved_balance IS NULL)",
+            name="ck_reconciliation_cases_resolution_state",
+        ),
+        CheckConstraint(
+            "(resolution_type = 'ADJUSTMENT' AND adjustment_event_id IS NOT NULL) OR "
+            "(COALESCE(resolution_type, '') <> 'ADJUSTMENT' AND adjustment_event_id IS NULL)",
+            name="ck_reconciliation_cases_adjustment_target",
+        ),
+        UniqueConstraint(
+            "adjustment_event_id",
+            name="uq_reconciliation_cases_adjustment_event_id",
+        ),
+        Index(
+            "ix_reconciliation_cases_user_status",
+            "user_id",
+            "status",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    account_id = Column(
+        Integer,
+        ForeignKey("financial_accounts.id"),
+        nullable=False,
+        index=True,
+    )
+    expected_balance = Column(Numeric(18, 2), nullable=False)
+    observed_balance = Column(Numeric(18, 2), nullable=False)
+    difference = Column(Numeric(18, 2), nullable=False)
+    status = Column(String, nullable=False)
+    resolution_type = Column(String, nullable=True)
+    adjustment_event_id = Column(
+        Integer,
+        ForeignKey("financial_events.id"),
+        nullable=True,
+        index=True,
+    )
+    resolved_balance = Column(Numeric(18, 2), nullable=True)
+    note = Column(String, nullable=True)
+    version = Column(Integer, nullable=False, default=1)
+    observed_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.datetime.now(datetime.timezone.utc),
+    )
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.datetime.now(datetime.timezone.utc),
+    )
+
+
+class ReconciliationHistory(Base):
+    __tablename__ = "reconciliation_history"
+    __table_args__ = (
+        CheckConstraint(
+            "transition_type IN ('DETECTED', 'RESOLVED_REAL_EVENT', 'RESOLVED_ADJUSTMENT')",
+            name="ck_reconciliation_history_transition_type",
+        ),
+        CheckConstraint(
+            "actor_type IN ('USER', 'SYSTEM', 'PROVIDER', 'AI')",
+            name="ck_reconciliation_history_actor_type",
+        ),
+        CheckConstraint(
+            "reconciliation_version >= 1",
+            name="ck_reconciliation_history_version_positive",
+        ),
+        UniqueConstraint(
+            "reconciliation_id",
+            "reconciliation_version",
+            name="uq_reconciliation_history_case_version",
+        ),
+        Index(
+            "ix_reconciliation_history_case_recorded",
+            "reconciliation_id",
+            "recorded_at",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    reconciliation_id = Column(
+        Integer,
+        ForeignKey("reconciliation_cases.id"),
+        nullable=False,
+        index=True,
+    )
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    reconciliation_version = Column(Integer, nullable=False)
+    transition_type = Column(String, nullable=False)
+    actor_type = Column(String, nullable=False)
+    actor_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    previous_state = Column(JSON, nullable=True)
+    new_state = Column(JSON, nullable=False)
+    reason = Column(String, nullable=True)
+    recorded_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.datetime.now(datetime.timezone.utc),
+    )
+
+
 class CommandReceipt(Base):
     __tablename__ = "command_receipts"
     __table_args__ = (
         CheckConstraint(
-            "command_type IN ('CREATE_TRANSACTION', 'UPDATE_TRANSACTION', 'DELETE_TRANSACTION', 'CREATE_TRANSFER', 'CREATE_REFUND', 'CREATE_REVERSAL')",
+            "command_type IN ('CREATE_TRANSACTION', 'UPDATE_TRANSACTION', 'DELETE_TRANSACTION', 'CREATE_TRANSFER', 'CREATE_REFUND', 'CREATE_REVERSAL', 'CREATE_RECONCILIATION', 'RESOLVE_RECONCILIATION', 'CONFIRM_RECONCILIATION_ADJUSTMENT')",
             name="ck_command_receipts_command_type",
         ),
         UniqueConstraint(
@@ -297,8 +429,9 @@ class CommandReceipt(Base):
             name="uq_command_receipts_user_command_key",
         ),
         CheckConstraint(
-            "(transaction_id IS NOT NULL AND financial_event_id IS NULL) OR "
-            "(transaction_id IS NULL AND financial_event_id IS NOT NULL)",
+            "(transaction_id IS NOT NULL AND financial_event_id IS NULL AND reconciliation_id IS NULL) OR "
+            "(transaction_id IS NULL AND financial_event_id IS NOT NULL AND reconciliation_id IS NULL) OR "
+            "(transaction_id IS NULL AND financial_event_id IS NULL AND reconciliation_id IS NOT NULL)",
             name="ck_command_receipts_exactly_one_target",
         ),
         Index(
@@ -322,6 +455,12 @@ class CommandReceipt(Base):
     financial_event_id = Column(
         Integer,
         ForeignKey("financial_events.id"),
+        nullable=True,
+        index=True,
+    )
+    reconciliation_id = Column(
+        Integer,
+        ForeignKey("reconciliation_cases.id"),
         nullable=True,
         index=True,
     )

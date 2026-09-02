@@ -17,9 +17,12 @@ from app.models import (
     FinancialEventEntry,
     FinancialEventHistory,
     FinancialEventLink,
+    ReconciliationCase,
+    ReconciliationHistory,
     Transaction,
     User,
 )
+from app.reconciliation_service import snapshot_reconciliation
 
 
 def _expected_signed_amount(transaction: Transaction) -> Decimal:
@@ -481,6 +484,206 @@ def find_first_causal_divergence(db: Session, user_id: int) -> dict | None:
     return None
 
 
+def find_first_reconciliation_divergence(db: Session, user_id: int) -> dict | None:
+    cases = (
+        db.query(ReconciliationCase)
+        .filter(ReconciliationCase.user_id == user_id)
+        .order_by(ReconciliationCase.id.asc())
+        .all()
+    )
+
+    for case in cases:
+        account = (
+            db.query(FinancialAccount)
+            .filter(FinancialAccount.id == case.account_id)
+            .one_or_none()
+        )
+        if account is None or account.user_id != user_id:
+            return {
+                "reconciliation_id": case.id,
+                "reason": "reconciliation_account_owner_mismatch",
+            }
+        if account.account_type != "CASH":
+            return {
+                "reconciliation_id": case.id,
+                "reason": "reconciliation_non_cash_account",
+                "account_type": account.account_type,
+            }
+
+        expected_difference = Decimal(case.observed_balance) - Decimal(case.expected_balance)
+        if Decimal(case.difference) != expected_difference:
+            return {
+                "reconciliation_id": case.id,
+                "reason": "reconciliation_difference_mismatch",
+                "expected": str(expected_difference),
+                "actual": str(case.difference),
+            }
+
+        history = (
+            db.query(ReconciliationHistory)
+            .filter(ReconciliationHistory.reconciliation_id == case.id)
+            .order_by(ReconciliationHistory.reconciliation_version.asc())
+            .all()
+        )
+        if not history:
+            return {
+                "reconciliation_id": case.id,
+                "reason": "reconciliation_missing_history",
+            }
+        expected_versions = list(range(1, case.version + 1))
+        actual_versions = [row.reconciliation_version for row in history]
+        if actual_versions != expected_versions:
+            return {
+                "reconciliation_id": case.id,
+                "reason": "reconciliation_history_version_gap",
+                "expected_versions": expected_versions,
+                "actual_versions": actual_versions,
+            }
+        if history[0].transition_type != "DETECTED":
+            return {
+                "reconciliation_id": case.id,
+                "reason": "reconciliation_history_does_not_start_detected",
+            }
+        if history[-1].new_state != snapshot_reconciliation(case):
+            return {
+                "reconciliation_id": case.id,
+                "reason": "reconciliation_latest_history_snapshot_mismatch",
+            }
+
+        if case.status == "RECONCILED":
+            if Decimal(case.difference) != 0:
+                return {
+                    "reconciliation_id": case.id,
+                    "reason": "reconciled_case_has_nonzero_difference",
+                }
+            if case.version != 1 or history[-1].transition_type != "DETECTED":
+                return {
+                    "reconciliation_id": case.id,
+                    "reason": "reconciled_case_has_resolution_transition",
+                }
+        elif case.status == "MISMATCH":
+            if Decimal(case.difference) == 0:
+                return {
+                    "reconciliation_id": case.id,
+                    "reason": "mismatch_case_has_zero_difference",
+                }
+            if case.resolution_type is not None or case.adjustment_event_id is not None:
+                return {
+                    "reconciliation_id": case.id,
+                    "reason": "unresolved_mismatch_has_resolution",
+                }
+        elif case.status == "RESOLVED":
+            if case.resolved_balance is None or Decimal(case.resolved_balance) != Decimal(case.observed_balance):
+                return {
+                    "reconciliation_id": case.id,
+                    "reason": "resolved_balance_does_not_match_observation",
+                }
+            if case.resolution_type == "REAL_EVENT":
+                if case.adjustment_event_id is not None:
+                    return {
+                        "reconciliation_id": case.id,
+                        "reason": "real_event_resolution_has_adjustment",
+                    }
+                if history[-1].transition_type != "RESOLVED_REAL_EVENT":
+                    return {
+                        "reconciliation_id": case.id,
+                        "reason": "real_event_resolution_history_mismatch",
+                    }
+            elif case.resolution_type == "ADJUSTMENT":
+                if case.adjustment_event_id is None:
+                    return {
+                        "reconciliation_id": case.id,
+                        "reason": "adjustment_resolution_missing_event",
+                    }
+                if history[-1].transition_type != "RESOLVED_ADJUSTMENT":
+                    return {
+                        "reconciliation_id": case.id,
+                        "reason": "adjustment_resolution_history_mismatch",
+                    }
+                event = (
+                    db.query(FinancialEvent)
+                    .filter(FinancialEvent.id == case.adjustment_event_id)
+                    .one_or_none()
+                )
+                if event is None or event.user_id != user_id:
+                    return {
+                        "reconciliation_id": case.id,
+                        "reason": "adjustment_event_owner_mismatch",
+                    }
+                if event.event_type != "ADJUSTMENT" or event.lifecycle_state != "ACTIVE":
+                    return {
+                        "reconciliation_id": case.id,
+                        "reason": "adjustment_event_state_invalid",
+                    }
+                if event.legacy_transaction_id is not None:
+                    return {
+                        "reconciliation_id": case.id,
+                        "reason": "adjustment_event_must_be_canonical_only",
+                    }
+                entries = (
+                    db.query(FinancialEventEntry)
+                    .filter(FinancialEventEntry.financial_event_id == event.id)
+                    .all()
+                )
+                if len(entries) != 1:
+                    return {
+                        "reconciliation_id": case.id,
+                        "reason": "adjustment_entry_count_mismatch",
+                    }
+                entry = entries[0]
+                if entry.account_id != case.account_id:
+                    return {
+                        "reconciliation_id": case.id,
+                        "reason": "adjustment_account_mismatch",
+                    }
+                if Decimal(entry.amount) != Decimal(case.difference):
+                    return {
+                        "reconciliation_id": case.id,
+                        "reason": "adjustment_amount_does_not_close_original_mismatch",
+                        "expected": str(case.difference),
+                        "actual": str(entry.amount),
+                    }
+            else:
+                return {
+                    "reconciliation_id": case.id,
+                    "reason": "resolved_case_resolution_type_invalid",
+                }
+        else:
+            return {
+                "reconciliation_id": case.id,
+                "reason": "reconciliation_status_unsupported",
+                "status": case.status,
+            }
+
+    adjustments = (
+        db.query(FinancialEvent)
+        .filter(
+            FinancialEvent.user_id == user_id,
+            FinancialEvent.event_type == "ADJUSTMENT",
+        )
+        .order_by(FinancialEvent.id.asc())
+        .all()
+    )
+    for event in adjustments:
+        references = (
+            db.query(ReconciliationCase)
+            .filter(
+                ReconciliationCase.user_id == user_id,
+                ReconciliationCase.adjustment_event_id == event.id,
+                ReconciliationCase.resolution_type == "ADJUSTMENT",
+            )
+            .count()
+        )
+        if references != 1:
+            return {
+                "financial_event_id": event.id,
+                "reason": "orphan_or_multiply_referenced_adjustment",
+                "reference_count": references,
+            }
+
+    return None
+
+
 def audit_user(db: Session, user_id: int) -> dict:
     legacy = legacy_summary(db, user_id)
     canonical_legacy = canonical_legacy_summary(db, user_id)
@@ -490,6 +693,7 @@ def audit_user(db: Session, user_id: int) -> dict:
     transfer_divergence = find_first_transfer_divergence(db, user_id)
     credit_card_divergence = find_first_credit_card_divergence(db, user_id)
     causal_divergence = find_first_causal_divergence(db, user_id)
+    reconciliation_divergence = find_first_reconciliation_divergence(db, user_id)
 
     summary_match = legacy == canonical_legacy
     return {
@@ -501,6 +705,7 @@ def audit_user(db: Session, user_id: int) -> dict:
             and transfer_divergence is None
             and credit_card_divergence is None
             and causal_divergence is None
+            and reconciliation_divergence is None
         ),
         "legacy": {key: str(value) for key, value in asdict(legacy).items()},
         "canonical": {
@@ -515,6 +720,7 @@ def audit_user(db: Session, user_id: int) -> dict:
         "transfer_divergence": transfer_divergence,
         "credit_card_divergence": credit_card_divergence,
         "causal_divergence": causal_divergence,
+        "reconciliation_divergence": reconciliation_divergence,
     }
 
 
