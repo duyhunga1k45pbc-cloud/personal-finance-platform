@@ -1,442 +1,542 @@
-# Personal Finance API
-
-A simple backend API for personal finance management built with FastAPI, PostgreSQL, SQLAlchemy, and Pydantic.
-
-This project supports user authentication, protected transaction APIs, filtering, pagination, and user-based data isolation.
-
-## Features
-
-- Register user
-- Login user with JWT
-- Get current authenticated user
-- Create transaction
-- Get transaction list
-- Get transaction detail
-- Update transaction
-- Delete transaction
-- Filter transactions by type and category
-- Pagination with skip and limit
-- Summary for income, expense, and balance
-- Request validation with Pydantic
-- Protected APIs with JWT authentication
-- User data isolation
-
-## Tech Stack
-
-- Python
-- FastAPI
-- PostgreSQL
-- SQLAlchemy
-- Pydantic
-- JWT
-- Uvicorn
-- python-dotenv
-
-## Project Structure
+Personal Finance Platform
 
-```text
-backend/
-├── app/
-│   ├── main.py
-│   ├── database.py
-│   ├── models.py
-│   ├── schemas.py
-│   ├── auth.py
-│   └── routers/
-│       ├── auth.py
-│       └── transactions.py
-├── tests/
-│   └── test_transactions.py
-├── .env.example
-├── .gitignore
-├── pytest.ini
-├── requirements.txt
-└── README.md
-```
+A reliability-focused personal finance backend built with FastAPI, PostgreSQL, and SQLAlchemy.
 
-## API Endpoints
+The project started as a conventional income/expense CRUD API and evolved into a state-correct financial system designed around a harder question:
 
-### Auth APIs
+How do we keep financial truth correct when requests retry, users correct data, providers disagree, workers crash, projections become stale, databases are restored, or new releases are deployed?
 
-| Method | Endpoint | Auth Required | Description |
-|---|---|---|---|
-| POST | `/auth/register` | No | Register a new user |
-| POST | `/auth/login` | No | Login and get JWT token |
-| GET | `/auth/me` | Yes | Get current authenticated user |
+The current V1 focuses on business correctness, state correctness, security correctness, and operational correctness rather than feature count.
 
-### Transaction APIs
+Why this project exists
 
-| Method | Endpoint | Auth Required | Description |
-|---|---|---|---|
-| GET | `/transactions` | Yes | List current user's transactions |
-| POST | `/transactions` | Yes | Create a transaction |
-| GET | `/transactions/{transaction_id}` | Yes | Get transaction detail |
-| PUT | `/transactions/{transaction_id}` | Yes | Update transaction |
-| DELETE | `/transactions/{transaction_id}` | Yes | Delete transaction |
-| GET | `/summary` | Yes | Get income, expense, and balance summary |
+A simple finance app can store transactions. A reliable finance system also needs to answer:
 
-## Environment Variables
+What is the source of this financial state?
 
-Create a `.env` file from `.env.example`:
+Is this raw evidence or an interpretation?
 
-```bash
-cp .env.example .env
-```
+What happens when a transaction is corrected, refunded, or reversed?
 
-Example `.env`:
+Can retries create duplicates?
 
-```env
-DATABASE_URL=postgresql://postgres:123456@localhost/finance_db
+Can concurrent requests corrupt state?
 
-SECRET_KEY=change-this-secret-key
-ALGORITHM=HS256
-ACCESS_TOKEN_EXPIRE_MINUTES=60
-```
+What happens when an external provider sends stale or conflicting data?
 
-The `.env` file is ignored by Git.
+Can derived balances be rebuilt from canonical truth?
 
-## Run Project Locally
+Can a restored database be proven equivalent to the backup?
 
-### 1. Create virtual environment
+Can a new application release safely start against the current database schema?
 
-```bash
-python3 -m venv venv
-source venv/bin/activate
-```
+The architecture is built around those failure modes.
 
-### 2. Install dependencies
+Core state model
 
-```bash
-pip install -r requirements.txt
-```
+Reality
+  ↓
+Raw evidence
+  ↓
+Identity / deduplication
+  ↓
+Normalization
+  ↓
+Canonical interpretation
+  ↓
+Canonical financial state
+  ↓
+Rebuildable projections
 
-### 3. Create PostgreSQL database
+Reconciliation runs alongside that flow:
 
-Login to PostgreSQL:
+Expected state
+      ↕
+Observed external state
+      ↓
+Mismatch
+      ↓
+Explicit resolution
 
-```bash
-sudo -u postgres psql
-```
+The system follows a strict truth hierarchy:
 
-Create database:
+Raw provider evidence is immutable.
 
-```sql
-CREATE DATABASE finance_db;
-```
+Canonical interpretation can be corrected, but corrections are auditable.
 
-Exit PostgreSQL:
+Canonical financial state is derived from accepted interpretation.
 
-```sql
-\q
-```
+External observed state is stored separately.
 
-### 4. Run server
+Reconciliation compares expected and observed state.
 
-```bash
-uvicorn app.main:app --reload
-```
+Projections are rebuildable and are never treated as canonical truth.
 
-Open Swagger docs:
+Financial semantics
 
-```text
-http://127.0.0.1:8000/docs
-```
+The backend models financial events explicitly rather than treating every row as a generic transaction.
 
-## Authentication Flow
+Supported event types include:
 
-This project uses JWT authentication.
+INCOME
 
-### 1. Register
+EXPENSE
 
-```http
-POST /auth/register
-```
+TRANSFER
 
-Request body:
+REFUND
 
-```json
-{
-  "email": "user@example.com",
-  "password": "123456"
-}
-```
+REVERSAL
 
-Example response:
+ADJUSTMENT
 
-```json
-{
-  "id": 1,
-  "email": "user@example.com",
-  "message": "User registered successfully"
-}
-```
+Important invariants:
 
-### 2. Login
+Internal transfers do not change net worth.
 
-```http
-POST /auth/login
-```
+Credit-card purchases count as expenses when posted.
 
-Request body:
+Credit-card repayments are transfers, not second expenses.
 
-```json
-{
-  "email": "user@example.com",
-  "password": "123456"
-}
-```
+Refunds and reversals are new linked events; original events are preserved.
 
-Example response:
+Provider evidence is never silently rewritten to make canonical state look correct.
 
-```json
-{
-  "access_token": "jwt_token_here",
-  "token_type": "bearer"
-}
-```
+Adjustments are explicit and reserved for unreconstructable gaps.
 
-### 3. Use Token in Swagger
+User-confirmed interpretations cannot be silently overwritten by automated classification.
 
-In Swagger UI:
+State correctness
 
-1. Click **Authorize**
-2. Paste the `access_token`
-3. Click **Authorize**
-4. Call protected APIs
+Idempotency
 
-Protected APIs require this header:
+Retried commands are protected from producing duplicate state transitions.
 
-```http
-Authorization: Bearer <access_token>
-```
+The system distinguishes:
 
-## Transaction Example
+same idempotency key + same command
+→ replay the previous result
 
-### Create transaction
+same idempotency key + different command
+→ conflict
 
-```http
-POST /transactions
-```
+Concurrency control
 
-Request body:
+Concurrent state changes are protected with transactional mechanisms including optimistic version checks and row locking where required.
 
-```json
-{
-  "amount": 50000,
-  "description": "Dinner",
-  "category": "food",
-  "type": "expense"
-}
-```
+The goal is not merely to avoid exceptions, but to prevent invalid financial state from being committed.
 
-Example response:
+Append-only history
 
-```json
-{
-  "id": 1,
-  "amount": 50000,
-  "description": "Dinner",
-  "category": "food",
-  "type": "expense",
-  "user_id": 1,
-  "date": "2026-07-07T10:00:00"
-}
-```
+Important state transitions preserve history instead of overwriting the past.
 
-## Validation Rules
+Examples include:
 
-`type` must be one of:
+created
 
-```text
-income
-expense
-```
+corrected
 
-`amount` must be greater than `0`.
+voided
 
-Invalid request example:
+provider lifecycle transitions
 
-```json
-{
-  "amount": 0,
-  "description": "Invalid transaction",
-  "category": "food",
-  "type": "expense"
-}
-```
+reconciliation transitions
 
-This will return:
+interpretation transitions
 
-```text
-422 Unprocessable Entity
-```
+Source lifecycle
 
-## Filtering and Pagination
+Provider transactions use an explicit lifecycle:
 
-List transactions:
+PENDING
+  ↓
+POSTED
+  ↓
+REVERSED
 
-```http
-GET /transactions
-```
+Stale regressions are rejected instead of silently moving canonical state backward.
 
-Filter by type:
+External provider pipeline
 
-```http
-GET /transactions?type=expense
-```
+The provider integration layer is designed around immutable evidence and stable identity.
 
-Filter by category:
+Provider payload
+    ↓
+Immutable external evidence
+    ↓
+Stable external identity
+    ↓
+Normalization
+    ↓
+Interpretation state machine
+    ↓
+Canonical event materialization
 
-```http
-GET /transactions?category=food
-```
+Provider sync also uses durable checkpoints so crash/retry behavior can be handled without corrupting progress or duplicating canonical state.
 
-Filter by type and category:
+The V1 currently proves the provider pipeline with adapters and tests; connecting a real financial provider is a later product-integration step.
 
-```http
-GET /transactions?type=expense&category=food
-```
+Reconciliation
 
-Pagination:
+Financial systems cannot assume internal state always matches external reality.
 
-```http
-GET /transactions?skip=0&limit=10
-```
+The reconciliation model makes disagreement explicit:
 
-Example response:
+Expected balance
+      vs
+Observed balance
+      ↓
+UNKNOWN / RECONCILED / MISMATCH / RESOLVED
 
-```json
-{
-  "total": 2,
-  "skip": 0,
-  "limit": 10,
-  "data": [
-    {
-      "id": 1,
-      "amount": 50000,
-      "description": "Dinner",
-      "category": "food",
-      "type": "expense",
-      "user_id": 1,
-      "date": "2026-07-07T10:00:00"
-    }
-  ]
-}
-```
+A mismatch is not hidden by silently changing canonical history.
 
-## Summary
+Resolution can be based on:
 
-```http
-GET /summary
-```
+a real missing financial event, or
 
-Example response:
+an explicit adjustment when the gap cannot be reconstructed.
 
-```json
-{
-  "total_income": 10000000,
-  "total_expense": 140000,
-  "balance": 9860000
-}
-```
+Rebuildable projections
 
-## Data Isolation
+Balances and summaries are treated as projections rather than primary truth.
 
-Each user can only access their own transactions.
+The system can:
 
-For example:
+detect stale or missing projections,
 
-- User A can only see User A's transactions
-- User B can only see User B's transactions
-- Users cannot access each other's transaction data
+rebuild them atomically from canonical state,
 
-## Run Tests
+verify canonical fingerprints,
 
-This project uses pytest for unit testing.
+fail closed when a projection cannot be trusted.
 
-```bash
+This means a broken derived view does not require rewriting historical financial truth.
+
+Security correctness
+
+Security is treated as part of state correctness:
+
+Who is allowed to cause which state transition?
+
+V1 includes:
+
+strict JWT validation,
+
+issuer and audience validation,
+
+expiration and timing claims,
+
+token type checks,
+
+user-bound subject identity,
+
+production secret validation,
+
+uniform authentication failures,
+
+normalized registration identity,
+
+duplicate-registration containment,
+
+password boundary validation,
+
+public/private endpoint boundary tests,
+
+production documentation disabling,
+
+sensitive-value log redaction,
+
+security headers.
+
+Rate limiting is intentionally not implemented as a fake in-memory production mechanism. A shared limiter should be selected after the real deployment topology is known.
+
+Observability
+
+The application exposes structured operational signals for correctness-relevant failures.
+
+Examples include:
+
+HTTP requests and 5xx responses,
+
+database failures,
+
+provider sync conflicts and failures,
+
+reconciliation mismatches,
+
+missing or stale projections,
+
+projection rebuild results,
+
+sync checkpoint age,
+
+durable operational counts.
+
+Health endpoints:
+
+GET /health/live
+GET /health/ready
+
+/health/live answers whether the process is alive.
+
+/health/ready verifies that the process is ready to serve traffic, including database and schema compatibility checks.
+
+Backup, restore, and disaster recovery
+
+A backup is not considered trustworthy merely because pg_dump exits successfully.
+
+The recovery flow verifies the restored state:
+
+PostgreSQL source
+      ↓
+consistent backup snapshot
+      ↓
+dump + integrity manifest
+      ↓
+restore into disposable database
+      ↓
+full-state verification
+      ↓
+remove derived projections
+      ↓
+rebuild projections
+      ↓
+canonical audit
+
+The manifest fingerprints:
+
+table contents,
+
+schema objects,
+
+sequence state,
+
+Alembic revision,
+
+canonical truth excluding rebuildable projections.
+
+The restore drill has been executed successfully against a real PostgreSQL database.
+
+Example verified result:
+
+restore_exact_match=true
+projection_rebuild_verified=true
+canonical_audit_ok=true
+
+Deployment correctness
+
+The application does not automatically mutate the database schema during startup.
+
+A release must satisfy deployment gates before it is considered ready:
+
+Application release
+      ↓
+Database reachable?
+      ↓
+Database schema == expected Alembic head?
+      ↓
+Canonical audit valid?
+      ↓
+Process serving
+      ↓
+Readiness + smoke verification
+
+The deployment layer includes:
+
+startup readiness gates,
+
+Alembic revision compatibility checks,
+
+release metadata,
+
+pre-deployment verification,
+
+real-process smoke tests,
+
+graceful shutdown behavior.
+
+A schema mismatch fails closed rather than allowing a new application version to run against an incompatible database.
+
+Correctness model
+
+The V1 architecture closes four major correctness layers:
+
+System correctness
+├── Business correctness
+├── State correctness
+├── Security correctness
+└── Operational correctness
+    ├── Observability
+    ├── Backup / Restore
+    └── Deployment / Failure Operations
+
+The design process used throughout the project is:
+
+Business objective
+      ↓
+Desired behavior
+      ↓
+Invariant
+      ↓
+Failure mode
+      ↓
+Prevent / contain / detect / recover / explain
+      ↓
+Automated proof
+
+Complexity is added only when a concrete failure mode justifies it.
+
+Verification
+
+Current V1 verification:
+
+179 automated tests passing
+
+The suite covers areas including:
+
+accounts and ownership,
+
+canonical events,
+
+transfers,
+
+credit-card semantics,
+
+refunds and reversals,
+
+reconciliation,
+
+concurrency,
+
+idempotency,
+
+provider evidence,
+
+provider interpretation,
+
+provider lifecycle,
+
+crash-safe provider synchronization,
+
+projections,
+
+security,
+
+observability,
+
+disaster recovery,
+
+deployment correctness,
+
+end-to-end V1 acceptance scenarios.
+
+In addition to automated tests, the project has completed:
+
+a real PostgreSQL backup/restore drill,
+
+projection deletion and rebuild verification,
+
+canonical-state audit after restore,
+
+deployment preflight,
+
+real Uvicorn process smoke testing,
+
+liveness and readiness verification,
+
+SIGTERM shutdown testing.
+
+Technology
+
+Python
+
+FastAPI
+
+PostgreSQL
+
+SQLAlchemy
+
+Alembic
+
+Pydantic
+
+JWT authentication
+
 pytest
-```
 
-Current tested features:
+Uvicorn
 
-- Home API
-- Create transaction API
-- Amount validation
-- Transaction type validation
+The architecture is intentionally a modular monolith.
 
-## Current Status
+Microservices, Kafka, Redis, Kubernetes, and other infrastructure are not added unless a real failure mode or deployment requirement justifies them.
 
-- Basic CRUD completed
-- JWT authentication completed
-- Protected routes completed
-- User data isolation completed
-- Filter completed
-- Pagination completed
-- Summary completed
-- Environment configuration completed
-- Basic unit tests completed
+Running locally
 
-## Run with Docker
+From the backend directory, configure a PostgreSQL database through DATABASE_URL.
 
-Create `.env` file:
+Run the test suite:
 
-```bash
-cp .env.example .env
-```
+DATABASE_URL=postgresql://USER:PASSWORD@localhost:5432/finance_test_db \
+pytest -q
 
-For Docker, update `DATABASE_URL`:
+Run the API:
 
-```env
-DATABASE_URL=postgresql://postgres:123456@db:5432/finance_db
-```
+uvicorn app.main:app --reload
 
-Run project:
+Run deployment preflight:
 
-```bash
-docker compose up --build -d
-```
+DATABASE_URL=postgresql://USER:PASSWORD@localhost:5432/finance_test_db \
+python -m scripts.deployment_preflight
 
-Open Swagger:
+Run a deployment smoke test against a running instance:
 
-```text
-http://127.0.0.1:8000/docs
-```
+python -m scripts.deployment_smoke \
+  --base-url http://127.0.0.1:8000
 
-Stop project:
+See the backend documentation for security, observability, disaster recovery, and deployment details.
 
-```bash
-docker compose down
-```
-## Database Migration with Alembic
+Current scope and next steps
 
-This project uses Alembic to manage database schema changes.
+V1 closes the correctness model under the currently modeled environment.
 
-Create or update database tables:
+The next phase is about connecting the system to production reality rather than adding another abstract correctness layer:
 
-```bash
-alembic upgrade head
-```
+real financial-provider integration,
 
-Create a new migration after changing SQLAlchemy models:
+frontend product experience,
 
-```bash
-alembic revision --autogenerate -m "migration message"
-```
+real deployment topology,
 
-Check current migration version:
+shared rate limiting,
 
-```bash
-alembic current
-```
+PostgreSQL WAL archiving and point-in-time recovery,
 
-Rollback one migration:
+production monitoring/alerting stack,
 
-```bash
-alembic downgrade -1
-```
-## Live Demo
+CI/CD automation.
 
-Swagger API docs:
+These additions will introduce new real-world failure modes. The same design process will be applied to them:
 
-https://personal-finance-platform-fbkb.onrender.com/docs
+new reality
+→ new failure mode
+→ invariant
+→ justified mechanism
+→ verification
+
+Project philosophy
+
+The project is built around a small set of principles:
+
+Do not modify evidence to make state look correct.
+
+Derived state must be rebuildable from canonical truth.
+
+Uncertainty should remain explicit.
+
+Failure modes justify mechanisms.
+
+Simplicity is a correctness strategy.
+
+When expected state and actual state diverge, find the first point of divergence.
+
+The result is intentionally not a feature-heavy finance application. It is a backend engineering project focused on making financial state explainable, auditable, recoverable, and difficult to corrupt silently.
