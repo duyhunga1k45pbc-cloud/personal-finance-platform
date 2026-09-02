@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app import models
 from app.canonical_service import canonical_summary
 from app.database import SessionLocal
+from app.deployment import assert_startup_ready, mark_process_draining, mark_process_serving
 from app.models import User
 from app.observability import (
     bind_request_id,
@@ -29,6 +30,17 @@ app = FastAPI(
     redoc_url=None if settings.is_production else "/redoc",
     openapi_url=None if settings.is_production else "/openapi.json",
 )
+
+
+@app.on_event("startup")
+def deployment_startup_gate():
+    assert_startup_ready()
+    mark_process_serving()
+
+
+@app.on_event("shutdown")
+def deployment_shutdown_gate():
+    mark_process_draining()
 
 
 @app.middleware("http")
