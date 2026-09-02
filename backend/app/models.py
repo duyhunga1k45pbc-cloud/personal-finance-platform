@@ -713,6 +713,133 @@ class ProviderTransactionLifecycleHistory(Base):
     )
 
 
+class ProviderSyncCheckpoint(Base):
+    __tablename__ = "provider_sync_checkpoints"
+    __table_args__ = (
+        CheckConstraint(
+            "version >= 1",
+            name="ck_provider_sync_checkpoints_version_positive",
+        ),
+        UniqueConstraint(
+            "provider_connection_id",
+            name="uq_provider_sync_checkpoints_connection",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    provider_connection_id = Column(
+        Integer,
+        ForeignKey("provider_connections.id"),
+        nullable=False,
+        index=True,
+    )
+    committed_cursor = Column(String(1024), nullable=True)
+    version = Column(Integer, nullable=False, default=1)
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.datetime.now(datetime.timezone.utc),
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.datetime.now(datetime.timezone.utc),
+    )
+
+
+class ProviderSyncPage(Base):
+    __tablename__ = "provider_sync_pages"
+    __table_args__ = (
+        CheckConstraint(
+            "length(page_hash) = 64",
+            name="ck_provider_sync_pages_hash_length",
+        ),
+        CheckConstraint(
+            "observations_count >= 0 AND evidence_created >= 0 AND evidence_deduplicated >= 0",
+            name="ck_provider_sync_pages_counts_nonnegative",
+        ),
+        CheckConstraint(
+            "observations_count = evidence_created + evidence_deduplicated",
+            name="ck_provider_sync_pages_counts_balance",
+        ),
+        CheckConstraint(
+            "checkpoint_version_before >= 1 AND checkpoint_version_after = checkpoint_version_before + 1",
+            name="ck_provider_sync_pages_checkpoint_version_step",
+        ),
+        UniqueConstraint(
+            "provider_connection_id",
+            "page_hash",
+            name="uq_provider_sync_pages_connection_hash",
+        ),
+        UniqueConstraint(
+            "provider_connection_id",
+            "checkpoint_version_after",
+            name="uq_provider_sync_pages_connection_checkpoint_version",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    provider_connection_id = Column(
+        Integer,
+        ForeignKey("provider_connections.id"),
+        nullable=False,
+        index=True,
+    )
+    request_cursor = Column(String(1024), nullable=True)
+    request_cursor_key = Column(String(1024), nullable=False)
+    next_cursor = Column(String(1024), nullable=True)
+    has_more = Column(Boolean, nullable=False)
+    page_hash = Column(String(64), nullable=False)
+    observations_count = Column(Integer, nullable=False)
+    evidence_created = Column(Integer, nullable=False)
+    evidence_deduplicated = Column(Integer, nullable=False)
+    checkpoint_version_before = Column(Integer, nullable=False)
+    checkpoint_version_after = Column(Integer, nullable=False)
+    committed_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.datetime.now(datetime.timezone.utc),
+    )
+
+
+class ProviderSyncPageEvidence(Base):
+    __tablename__ = "provider_sync_page_evidence"
+    __table_args__ = (
+        CheckConstraint(
+            "ordinal >= 0",
+            name="ck_provider_sync_page_evidence_ordinal_nonnegative",
+        ),
+        UniqueConstraint(
+            "sync_page_id",
+            "ordinal",
+            name="uq_provider_sync_page_evidence_page_ordinal",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    sync_page_id = Column(
+        Integer,
+        ForeignKey("provider_sync_pages.id"),
+        nullable=False,
+        index=True,
+    )
+    external_evidence_id = Column(
+        Integer,
+        ForeignKey("external_transaction_evidence.id"),
+        nullable=False,
+        index=True,
+    )
+    ordinal = Column(Integer, nullable=False)
+    created_evidence = Column(Boolean, nullable=False)
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.datetime.now(datetime.timezone.utc),
+    )
+
+
 class CommandReceipt(Base):
     __tablename__ = "command_receipts"
     __table_args__ = (

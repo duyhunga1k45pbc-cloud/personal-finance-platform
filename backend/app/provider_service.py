@@ -9,7 +9,7 @@ from typing import Any
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models import ExternalTransaction, ExternalTransactionEvidence, ProviderConnection
+from app.models import ExternalTransaction, ExternalTransactionEvidence, ProviderConnection, ProviderSyncCheckpoint
 
 
 @dataclass(frozen=True)
@@ -73,6 +73,44 @@ def get_owned_provider_connection(
     )
 
 
+
+def ensure_provider_sync_checkpoint(
+    db: Session,
+    *,
+    user_id: int,
+    connection_id: int,
+) -> ProviderSyncCheckpoint:
+    existing = (
+        db.query(ProviderSyncCheckpoint)
+        .filter(ProviderSyncCheckpoint.provider_connection_id == connection_id)
+        .one_or_none()
+    )
+    if existing is not None:
+        if existing.user_id != user_id:
+            raise ValueError("Provider sync checkpoint ownership mismatch")
+        return existing
+
+    checkpoint = ProviderSyncCheckpoint(
+        user_id=user_id,
+        provider_connection_id=connection_id,
+        committed_cursor=None,
+        version=1,
+    )
+    try:
+        with db.begin_nested():
+            db.add(checkpoint)
+            db.flush()
+        return checkpoint
+    except IntegrityError:
+        existing = (
+            db.query(ProviderSyncCheckpoint)
+            .filter(ProviderSyncCheckpoint.provider_connection_id == connection_id)
+            .one()
+        )
+        if existing.user_id != user_id:
+            raise ValueError("Provider sync checkpoint ownership mismatch")
+        return existing
+
 def get_or_create_provider_connection(
     db: Session,
     *,
@@ -97,6 +135,11 @@ def get_or_create_provider_connection(
         .one_or_none()
     )
     if existing is not None:
+        ensure_provider_sync_checkpoint(
+            db,
+            user_id=user_id,
+            connection_id=existing.id,
+        )
         return ConnectionResult(existing, False)
 
     connection = ProviderConnection(
@@ -110,6 +153,11 @@ def get_or_create_provider_connection(
         with db.begin_nested():
             db.add(connection)
             db.flush()
+        ensure_provider_sync_checkpoint(
+            db,
+            user_id=user_id,
+            connection_id=connection.id,
+        )
         return ConnectionResult(connection, True)
     except IntegrityError:
         existing = (
@@ -120,6 +168,11 @@ def get_or_create_provider_connection(
                 ProviderConnection.external_account_id == account_id,
             )
             .one()
+        )
+        ensure_provider_sync_checkpoint(
+            db,
+            user_id=user_id,
+            connection_id=existing.id,
         )
         return ConnectionResult(existing, False)
 

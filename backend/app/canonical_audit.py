@@ -28,12 +28,16 @@ from app.models import (
     ProviderInterpretationHistory,
     ProviderTransactionLifecycle,
     ProviderTransactionLifecycleHistory,
+    ProviderSyncCheckpoint,
+    ProviderSyncPage,
+    ProviderSyncPageEvidence,
     Transaction,
     User,
 )
 from app.provider_interpretation_service import snapshot_provider_interpretation
 from app.provider_lifecycle_service import snapshot_provider_lifecycle
 from app.provider_service import hash_raw_payload
+from app.provider_sync_service import ProviderSyncObservation, sync_page_hash
 from app.reconciliation_service import snapshot_reconciliation
 
 
@@ -1146,6 +1150,181 @@ def find_first_provider_lifecycle_divergence(db: Session, user_id: int) -> dict 
 
     return None
 
+
+def find_first_provider_sync_divergence(db: Session, user_id: int) -> dict | None:
+    checkpoints = (
+        db.query(ProviderSyncCheckpoint)
+        .filter(ProviderSyncCheckpoint.user_id == user_id)
+        .order_by(ProviderSyncCheckpoint.provider_connection_id.asc())
+        .all()
+    )
+    checkpoint_connection_ids = {row.provider_connection_id for row in checkpoints}
+
+    orphan_pages = (
+        db.query(ProviderSyncPage)
+        .filter(ProviderSyncPage.user_id == user_id)
+        .order_by(ProviderSyncPage.id.asc())
+        .all()
+    )
+    for page in orphan_pages:
+        if page.provider_connection_id not in checkpoint_connection_ids:
+            return {
+                "provider_sync_page_id": page.id,
+                "reason": "provider_sync_page_missing_checkpoint",
+            }
+
+    for checkpoint in checkpoints:
+        connection = (
+            db.query(ProviderConnection)
+            .filter(ProviderConnection.id == checkpoint.provider_connection_id)
+            .one_or_none()
+        )
+        if connection is None or connection.user_id != user_id:
+            return {
+                "provider_sync_checkpoint_id": checkpoint.id,
+                "reason": "provider_sync_checkpoint_connection_invalid",
+            }
+        if checkpoint.version < 1:
+            return {
+                "provider_sync_checkpoint_id": checkpoint.id,
+                "reason": "provider_sync_checkpoint_version_invalid",
+            }
+
+        pages = (
+            db.query(ProviderSyncPage)
+            .filter(
+                ProviderSyncPage.user_id == user_id,
+                ProviderSyncPage.provider_connection_id == connection.id,
+            )
+            .order_by(ProviderSyncPage.checkpoint_version_after.asc())
+            .all()
+        )
+        if not pages:
+            if checkpoint.version != 1 or checkpoint.committed_cursor is not None:
+                return {
+                    "provider_sync_checkpoint_id": checkpoint.id,
+                    "reason": "provider_sync_empty_checkpoint_shape_invalid",
+                }
+            continue
+
+        expected_version_before = 1
+        expected_request_cursor = None
+        for page in pages:
+            if page.checkpoint_version_before != expected_version_before:
+                return {
+                    "provider_sync_page_id": page.id,
+                    "reason": "provider_sync_checkpoint_version_chain_break",
+                    "expected": expected_version_before,
+                    "actual": page.checkpoint_version_before,
+                }
+            if page.checkpoint_version_after != page.checkpoint_version_before + 1:
+                return {
+                    "provider_sync_page_id": page.id,
+                    "reason": "provider_sync_checkpoint_version_step_invalid",
+                }
+            if page.request_cursor != expected_request_cursor:
+                return {
+                    "provider_sync_page_id": page.id,
+                    "reason": "provider_sync_cursor_chain_break",
+                    "expected": expected_request_cursor,
+                    "actual": page.request_cursor,
+                }
+            if page.request_cursor_key != ("<NULL>" if page.request_cursor is None else page.request_cursor):
+                return {
+                    "provider_sync_page_id": page.id,
+                    "reason": "provider_sync_request_cursor_key_invalid",
+                }
+            if page.has_more and page.next_cursor == page.request_cursor:
+                return {
+                    "provider_sync_page_id": page.id,
+                    "reason": "provider_sync_nonadvancing_cursor_with_more_pages",
+                }
+
+            links = (
+                db.query(ProviderSyncPageEvidence)
+                .filter(ProviderSyncPageEvidence.sync_page_id == page.id)
+                .order_by(ProviderSyncPageEvidence.ordinal.asc())
+                .all()
+            )
+            if len(links) != page.observations_count:
+                return {
+                    "provider_sync_page_id": page.id,
+                    "reason": "provider_sync_page_observation_count_mismatch",
+                }
+            if [row.ordinal for row in links] != list(range(len(links))):
+                return {
+                    "provider_sync_page_id": page.id,
+                    "reason": "provider_sync_page_evidence_ordinal_gap",
+                }
+            if sum(1 for row in links if row.created_evidence) != page.evidence_created:
+                return {
+                    "provider_sync_page_id": page.id,
+                    "reason": "provider_sync_page_created_count_mismatch",
+                }
+            if sum(1 for row in links if not row.created_evidence) != page.evidence_deduplicated:
+                return {
+                    "provider_sync_page_id": page.id,
+                    "reason": "provider_sync_page_deduplicated_count_mismatch",
+                }
+
+            observations = []
+            for link in links:
+                evidence = (
+                    db.query(ExternalTransactionEvidence)
+                    .filter(ExternalTransactionEvidence.id == link.external_evidence_id)
+                    .one_or_none()
+                )
+                if evidence is None or evidence.user_id != user_id or evidence.provider_connection_id != connection.id:
+                    return {
+                        "provider_sync_page_id": page.id,
+                        "reason": "provider_sync_page_evidence_owner_invalid",
+                    }
+                transaction = (
+                    db.query(ExternalTransaction)
+                    .filter(ExternalTransaction.id == evidence.external_transaction_record_id)
+                    .one_or_none()
+                )
+                if transaction is None or transaction.user_id != user_id or transaction.provider_connection_id != connection.id:
+                    return {
+                        "provider_sync_page_id": page.id,
+                        "reason": "provider_sync_page_transaction_invalid",
+                    }
+                observations.append(
+                    ProviderSyncObservation(
+                        external_transaction_id=transaction.external_transaction_id,
+                        observed_at=evidence.observed_at,
+                        raw_payload=evidence.raw_payload,
+                    )
+                )
+
+            expected_hash = sync_page_hash(
+                request_cursor=page.request_cursor,
+                next_cursor=page.next_cursor,
+                has_more=page.has_more,
+                observations=observations,
+            )
+            if page.page_hash != expected_hash:
+                return {
+                    "provider_sync_page_id": page.id,
+                    "reason": "provider_sync_page_hash_mismatch",
+                }
+
+            expected_version_before = page.checkpoint_version_after
+            expected_request_cursor = page.next_cursor
+
+        if checkpoint.version != pages[-1].checkpoint_version_after:
+            return {
+                "provider_sync_checkpoint_id": checkpoint.id,
+                "reason": "provider_sync_checkpoint_version_not_latest_page",
+            }
+        if checkpoint.committed_cursor != pages[-1].next_cursor:
+            return {
+                "provider_sync_checkpoint_id": checkpoint.id,
+                "reason": "provider_sync_checkpoint_cursor_not_latest_page",
+            }
+
+    return None
+
 def audit_user(db: Session, user_id: int) -> dict:
     legacy = legacy_summary(db, user_id)
     canonical_legacy = canonical_legacy_summary(db, user_id)
@@ -1159,6 +1338,7 @@ def audit_user(db: Session, user_id: int) -> dict:
     provider_evidence_divergence = find_first_provider_evidence_divergence(db, user_id)
     provider_interpretation_divergence = find_first_provider_interpretation_divergence(db, user_id)
     provider_lifecycle_divergence = find_first_provider_lifecycle_divergence(db, user_id)
+    provider_sync_divergence = find_first_provider_sync_divergence(db, user_id)
 
     summary_match = legacy == canonical_legacy
     return {
@@ -1174,6 +1354,7 @@ def audit_user(db: Session, user_id: int) -> dict:
             and provider_evidence_divergence is None
             and provider_interpretation_divergence is None
             and provider_lifecycle_divergence is None
+            and provider_sync_divergence is None
         ),
         "legacy": {key: str(value) for key, value in asdict(legacy).items()},
         "canonical": {
@@ -1192,6 +1373,7 @@ def audit_user(db: Session, user_id: int) -> dict:
         "provider_evidence_divergence": provider_evidence_divergence,
         "provider_interpretation_divergence": provider_interpretation_divergence,
         "provider_lifecycle_divergence": provider_lifecycle_divergence,
+        "provider_sync_divergence": provider_sync_divergence,
     }
 
 

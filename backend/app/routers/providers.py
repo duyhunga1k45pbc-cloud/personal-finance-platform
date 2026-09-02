@@ -12,7 +12,16 @@ from app.command_service import (
     normalize_idempotency_key,
 )
 from app.database import SessionLocal
-from app.models import ExternalTransaction, ExternalTransactionEvidence, ProviderConnection, ProviderTransactionInterpretation, User
+from app.models import (
+    ExternalTransaction,
+    ExternalTransactionEvidence,
+    ProviderConnection,
+    ProviderSyncCheckpoint,
+    ProviderSyncPage,
+    ProviderSyncPageEvidence,
+    ProviderTransactionInterpretation,
+    User,
+)
 from app.provider_service import (
     get_or_create_provider_connection,
     get_owned_provider_connection,
@@ -564,3 +573,103 @@ def confirm_provider_transaction(
     raced = commit_with_idempotency_race_recovery(db, user_id=current_user.id, command_type="CONFIRM_EXTERNAL_INTERPRETATION", idempotency_key=key, request_hash=request_hash)
     return raced.body if raced is not None else body
 
+
+
+@router.get("/{connection_id}/sync-checkpoint")
+def get_provider_sync_checkpoint(
+    connection_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    connection = get_owned_provider_connection(
+        db,
+        user_id=current_user.id,
+        connection_id=connection_id,
+    )
+    if connection is None:
+        raise HTTPException(status_code=404, detail="Provider connection not found")
+
+    checkpoint = (
+        db.query(ProviderSyncCheckpoint)
+        .filter(
+            ProviderSyncCheckpoint.user_id == current_user.id,
+            ProviderSyncCheckpoint.provider_connection_id == connection.id,
+        )
+        .one_or_none()
+    )
+    if checkpoint is None:
+        return {
+            "initialized": False,
+            "committed_cursor": None,
+            "version": 0,
+            "pages_committed": 0,
+        }
+
+    pages_committed = (
+        db.query(ProviderSyncPage)
+        .filter(
+            ProviderSyncPage.user_id == current_user.id,
+            ProviderSyncPage.provider_connection_id == connection.id,
+        )
+        .count()
+    )
+    return {
+        "initialized": True,
+        "committed_cursor": checkpoint.committed_cursor,
+        "version": checkpoint.version,
+        "pages_committed": pages_committed,
+        "updated_at": checkpoint.updated_at,
+    }
+
+
+@router.get("/{connection_id}/sync-pages")
+def list_provider_sync_pages(
+    connection_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    connection = get_owned_provider_connection(
+        db,
+        user_id=current_user.id,
+        connection_id=connection_id,
+    )
+    if connection is None:
+        raise HTTPException(status_code=404, detail="Provider connection not found")
+
+    rows = (
+        db.query(ProviderSyncPage)
+        .filter(
+            ProviderSyncPage.user_id == current_user.id,
+            ProviderSyncPage.provider_connection_id == connection.id,
+        )
+        .order_by(ProviderSyncPage.checkpoint_version_after.asc())
+        .all()
+    )
+    response = []
+    for row in rows:
+        evidence_ids = [
+            link.external_evidence_id
+            for link in (
+                db.query(ProviderSyncPageEvidence)
+                .filter(ProviderSyncPageEvidence.sync_page_id == row.id)
+                .order_by(ProviderSyncPageEvidence.ordinal.asc())
+                .all()
+            )
+        ]
+        response.append(
+            {
+                "id": row.id,
+                "request_cursor": row.request_cursor,
+                "next_cursor": row.next_cursor,
+                "has_more": row.has_more,
+                "page_hash": row.page_hash,
+                "observations_count": row.observations_count,
+                "evidence_created": row.evidence_created,
+                "evidence_deduplicated": row.evidence_deduplicated,
+                "checkpoint_version_before": row.checkpoint_version_before,
+                "checkpoint_version_after": row.checkpoint_version_after,
+                "evidence_ids": evidence_ids,
+                "committed_at": row.committed_at,
+            }
+        )
+    return response
