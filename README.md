@@ -2,425 +2,141 @@ Personal Finance Platform
 
 A reliability-focused personal finance backend built with FastAPI, PostgreSQL, and SQLAlchemy.
 
-The project started as a conventional income/expense CRUD API and evolved into a state-correct financial system designed around a harder question:
+This project started as a conventional income/expense CRUD API and evolved into a backend engineering case study focused on a harder question:
 
-How do we keep financial truth correct when requests retry, users correct data, providers disagree, workers crash, projections become stale, databases are restored, or new releases are deployed?
+How do we keep financial state correct when requests retry, users correct data, external providers disagree, workers fail, projections become stale, databases are restored, or new releases are deployed?
 
-The current V1 focuses on business correctness, state correctness, security correctness, and operational correctness rather than feature count.
+The project emphasizes correctness, auditability, recoverability, and operational safety rather than feature count.
 
-Why this project exists
+What this project demonstrates
 
-A simple finance app can store transactions. A reliable finance system also needs to answer:
+The system is designed around several classes of correctness:
 
-What is the source of this financial state?
+Business correctness — financial events preserve their intended meaning.
 
-Is this raw evidence or an interpretation?
+State correctness — retries, concurrency, corrections, and external updates do not silently corrupt financial state.
 
-What happens when a transaction is corrected, refunded, or reversed?
+Security correctness — only valid identities and authorized requests can cause state transitions.
 
-Can retries create duplicates?
+Operational correctness — recovery, deployment, and runtime failures are handled explicitly and fail safely.
 
-Can concurrent requests corrupt state?
+The implementation uses a modular-monolith architecture so that domain behavior remains understandable and testable without introducing distributed-system complexity that is not justified by the current scope.
 
-What happens when an external provider sends stale or conflicting data?
+Why financial correctness is hard
 
-Can derived balances be rebuilt from canonical truth?
+A finance backend has to deal with more than storing rows.
 
-Can a restored database be proven equivalent to the backup?
+Examples of questions the system is designed to handle include:
 
-Can a new application release safely start against the current database schema?
+Can a retried request create duplicate state changes?
 
-The architecture is built around those failure modes.
+Can concurrent operations produce an invalid balance?
 
-Core state model
+How should corrections, refunds, reversals, and transfers affect financial state?
 
-Reality
-  ↓
-Raw evidence
-  ↓
-Identity / deduplication
-  ↓
+What happens when external data is stale, conflicting, or incomplete?
+
+Can derived balances and summaries be rebuilt from trusted state?
+
+Can a restored database be verified rather than merely assumed to be correct?
+
+Can a new release safely start against the current database schema?
+
+These failure modes drive the design.
+
+High-level architecture
+
+External systems
+       |
+       v
+Data ingestion
+       |
+       v
 Normalization
-  ↓
-Canonical interpretation
-  ↓
-Canonical financial state
-  ↓
-Rebuildable projections
+       |
+       v
+Domain / financial state
+       |
+       v
+Derived views
+       |
+       v
+API
 
-Reconciliation runs alongside that flow:
+Cross-cutting concerns:
+security · auditability · observability · recovery
 
-Expected state
-      ↕
-Observed external state
-      ↓
-Mismatch
-      ↓
-Explicit resolution
+Detailed internal workflows, reusable components, and production-specific implementation details are intentionally omitted from this public portfolio repository.
 
-The system follows a strict truth hierarchy:
+Key engineering properties
 
-Raw provider evidence is immutable.
+Deterministic state transitions
 
-Canonical interpretation can be corrected, but corrections are auditable.
+Important financial changes are modeled explicitly so that business semantics remain understandable and testable.
 
-Canonical financial state is derived from accepted interpretation.
+The system distinguishes operations such as income, expenses, transfers, refunds, reversals, and adjustments instead of treating every row as an interchangeable transaction.
 
-External observed state is stored separately.
+Idempotency and concurrency protection
 
-Reconciliation compares expected and observed state.
+Retried commands are protected from creating duplicate state transitions.
 
-Projections are rebuildable and are never treated as canonical truth.
+Concurrent changes are guarded with transactional mechanisms so that invalid financial state is prevented from being committed rather than merely detected after the fact.
 
-Financial semantics
+Explicit reconciliation
 
-The backend models financial events explicitly rather than treating every row as a generic transaction.
+Internal financial state and externally observed state are treated as separate concerns.
 
-Supported event types include:
+Disagreement is surfaced explicitly and resolved through controlled workflows rather than silently rewriting history to make numbers appear consistent.
 
-INCOME
+Rebuildable derived state
 
-EXPENSE
+Balances and summaries are treated as derived views rather than the ultimate source of truth.
 
-TRANSFER
+If derived state becomes stale or invalid, it can be rebuilt and verified from canonical financial state.
 
-REFUND
+Failure-aware operations
 
-REVERSAL
+The project includes operational safeguards around:
 
-ADJUSTMENT
+readiness and schema compatibility,
 
-Important invariants:
+backup and restore verification,
 
-Internal transfers do not change net worth.
+observability for correctness-relevant failures,
 
-Credit-card purchases count as expenses when posted.
+graceful shutdown,
 
-Credit-card repayments are transfers, not second expenses.
+deployment smoke testing,
 
-Refunds and reversals are new linked events; original events are preserved.
+fail-closed behavior when important assumptions are violated.
 
-Provider evidence is never silently rewritten to make canonical state look correct.
-
-Adjustments are explicit and reserved for unreconstructable gaps.
-
-User-confirmed interpretations cannot be silently overwritten by automated classification.
-
-State correctness
-
-Idempotency
-
-Retried commands are protected from producing duplicate state transitions.
-
-The system distinguishes:
-
-same idempotency key + same command
-→ replay the previous result
-
-same idempotency key + different command
-→ conflict
-
-Concurrency control
-
-Concurrent state changes are protected with transactional mechanisms including optimistic version checks and row locking where required.
-
-The goal is not merely to avoid exceptions, but to prevent invalid financial state from being committed.
-
-Append-only history
-
-Important state transitions preserve history instead of overwriting the past.
-
-Examples include:
-
-created
-
-corrected
-
-voided
-
-provider lifecycle transitions
-
-reconciliation transitions
-
-interpretation transitions
-
-Source lifecycle
-
-Provider transactions use an explicit lifecycle:
-
-PENDING
-  ↓
-POSTED
-  ↓
-REVERSED
-
-Stale regressions are rejected instead of silently moving canonical state backward.
-
-External provider pipeline
-
-The provider integration layer is designed around immutable evidence and stable identity.
-
-Provider payload
-    ↓
-Immutable external evidence
-    ↓
-Stable external identity
-    ↓
-Normalization
-    ↓
-Interpretation state machine
-    ↓
-Canonical event materialization
-
-Provider sync also uses durable checkpoints so crash/retry behavior can be handled without corrupting progress or duplicating canonical state.
-
-The V1 currently proves the provider pipeline with adapters and tests; connecting a real financial provider is a later product-integration step.
-
-Reconciliation
-
-Financial systems cannot assume internal state always matches external reality.
-
-The reconciliation model makes disagreement explicit:
-
-Expected balance
-      vs
-Observed balance
-      ↓
-UNKNOWN / RECONCILED / MISMATCH / RESOLVED
-
-A mismatch is not hidden by silently changing canonical history.
-
-Resolution can be based on:
-
-a real missing financial event, or
-
-an explicit adjustment when the gap cannot be reconstructed.
-
-Rebuildable projections
-
-Balances and summaries are treated as projections rather than primary truth.
-
-The system can:
-
-detect stale or missing projections,
-
-rebuild them atomically from canonical state,
-
-verify canonical fingerprints,
-
-fail closed when a projection cannot be trusted.
-
-This means a broken derived view does not require rewriting historical financial truth.
-
-Security correctness
-
-Security is treated as part of state correctness:
-
-Who is allowed to cause which state transition?
-
-V1 includes:
-
-strict JWT validation,
-
-issuer and audience validation,
-
-expiration and timing claims,
-
-token type checks,
-
-user-bound subject identity,
-
-production secret validation,
-
-uniform authentication failures,
-
-normalized registration identity,
-
-duplicate-registration containment,
-
-password boundary validation,
-
-public/private endpoint boundary tests,
-
-production documentation disabling,
-
-sensitive-value log redaction,
-
-security headers.
-
-Rate limiting is intentionally not implemented as a fake in-memory production mechanism. A shared limiter should be selected after the real deployment topology is known.
-
-Observability
-
-The application exposes structured operational signals for correctness-relevant failures.
-
-Examples include:
-
-HTTP requests and 5xx responses,
-
-database failures,
-
-provider sync conflicts and failures,
-
-reconciliation mismatches,
-
-missing or stale projections,
-
-projection rebuild results,
-
-sync checkpoint age,
-
-durable operational counts.
-
-Health endpoints:
-
-GET /health/live
-GET /health/ready
-
-/health/live answers whether the process is alive.
-
-/health/ready verifies that the process is ready to serve traffic, including database and schema compatibility checks.
-
-Backup, restore, and disaster recovery
-
-A backup is not considered trustworthy merely because pg_dump exits successfully.
-
-The recovery flow verifies the restored state:
-
-PostgreSQL source
-      ↓
-consistent backup snapshot
-      ↓
-dump + integrity manifest
-      ↓
-restore into disposable database
-      ↓
-full-state verification
-      ↓
-remove derived projections
-      ↓
-rebuild projections
-      ↓
-canonical audit
-
-The manifest fingerprints:
-
-table contents,
-
-schema objects,
-
-sequence state,
-
-Alembic revision,
-
-canonical truth excluding rebuildable projections.
-
-The restore drill has been executed successfully against a real PostgreSQL database.
-
-Example verified result:
-
-restore_exact_match=true
-projection_rebuild_verified=true
-canonical_audit_ok=true
-
-Deployment correctness
-
-The application does not automatically mutate the database schema during startup.
-
-A release must satisfy deployment gates before it is considered ready:
-
-Application release
-      ↓
-Database reachable?
-      ↓
-Database schema == expected Alembic head?
-      ↓
-Canonical audit valid?
-      ↓
-Process serving
-      ↓
-Readiness + smoke verification
-
-The deployment layer includes:
-
-startup readiness gates,
-
-Alembic revision compatibility checks,
-
-release metadata,
-
-pre-deployment verification,
-
-real-process smoke tests,
-
-graceful shutdown behavior.
-
-A schema mismatch fails closed rather than allowing a new application version to run against an incompatible database.
-
-Correctness model
-
-The V1 architecture closes four major correctness layers:
-
-System correctness
-├── Business correctness
-├── State correctness
-├── Security correctness
-└── Operational correctness
-    ├── Observability
-    ├── Backup / Restore
-    └── Deployment / Failure Operations
-
-The design process used throughout the project is:
-
-Business objective
-      ↓
-Desired behavior
-      ↓
-Invariant
-      ↓
-Failure mode
-      ↓
-Prevent / contain / detect / recover / explain
-      ↓
-Automated proof
-
-Complexity is added only when a concrete failure mode justifies it.
+The public repository intentionally focuses on the engineering case study rather than exposing the complete internal operating model.
 
 Verification
 
-Current V1 verification:
+Current V1 verification includes 179 automated tests.
 
-179 automated tests passing
+Coverage includes areas such as:
 
-The suite covers areas including:
+account ownership,
 
-accounts and ownership,
-
-canonical events,
+financial event semantics,
 
 transfers,
 
-credit-card semantics,
-
 refunds and reversals,
-
-reconciliation,
-
-concurrency,
 
 idempotency,
 
-provider evidence,
+concurrency,
 
-provider interpretation,
+reconciliation,
 
-provider lifecycle,
+provider-related state handling,
 
-crash-safe provider synchronization,
+derived projections,
 
-projections,
-
-security,
+authentication and authorization,
 
 observability,
 
@@ -428,7 +144,7 @@ disaster recovery,
 
 deployment correctness,
 
-end-to-end V1 acceptance scenarios.
+end-to-end acceptance scenarios.
 
 In addition to automated tests, the project has completed:
 
@@ -438,13 +154,31 @@ projection deletion and rebuild verification,
 
 canonical-state audit after restore,
 
-deployment preflight,
+deployment preflight validation,
 
 real Uvicorn process smoke testing,
 
 liveness and readiness verification,
 
 SIGTERM shutdown testing.
+
+Selected design principles
+
+The project follows a small set of engineering principles:
+
+Do not modify evidence merely to make state appear correct.
+
+Derived state should be rebuildable from trusted state.
+
+Uncertainty should remain explicit.
+
+Concrete failure modes should justify added mechanisms.
+
+Simplicity is a correctness strategy.
+
+When expected and actual state diverge, find the first point of divergence.
+
+The detailed decision records behind these principles are kept private; the public repository is intended to demonstrate the engineering approach and verified outcomes.
 
 Technology
 
@@ -466,77 +200,26 @@ pytest
 
 Uvicorn
 
-The architecture is intentionally a modular monolith.
-
-Microservices, Kafka, Redis, Kubernetes, and other infrastructure are not added unless a real failure mode or deployment requirement justifies them.
-
 Running locally
 
 From the backend directory, configure a PostgreSQL database through DATABASE_URL.
 
 Run the test suite:
 
-DATABASE_URL=postgresql://USER:PASSWORD@localhost:5432/finance_test_db \
-pytest -q
+DATABASE_URL=postgresql://USER:PASSWORD@localhost:5432/finance_test_db pytest -q
 
 Run the API:
 
 uvicorn app.main:app --reload
 
-Run deployment preflight:
+Current scope
 
-DATABASE_URL=postgresql://USER:PASSWORD@localhost:5432/finance_test_db \
-python -m scripts.deployment_preflight
+V1 focuses on the backend correctness model under the currently implemented environment.
 
-Run a deployment smoke test against a running instance:
+Potential future work includes production integrations, deployment infrastructure, monitoring, and user-facing product development. Those additions would introduce new real-world failure modes and would be evaluated using the same failure-driven engineering approach.
 
-python -m scripts.deployment_smoke \
-  --base-url http://127.0.0.1:8000
+Portfolio note
 
-See the backend documentation for security, observability, disaster recovery, and deployment details.
+This public repository is a portfolio-oriented technical showcase. Some reusable internal components, detailed implementation logic, design records, and production-specific architecture are intentionally omitted.
 
-Current scope and next steps
-
-V1 closes the correctness model under the currently modeled environment.
-
-The next phase is about connecting the system to production reality rather than adding another abstract correctness layer:
-
-real financial-provider integration,
-
-frontend product experience,
-
-real deployment topology,
-
-shared rate limiting,
-
-PostgreSQL WAL archiving and point-in-time recovery,
-
-production monitoring/alerting stack,
-
-CI/CD automation.
-
-These additions will introduce new real-world failure modes. The same design process will be applied to them:
-
-new reality
-→ new failure mode
-→ invariant
-→ justified mechanism
-→ verification
-
-Project philosophy
-
-The project is built around a small set of principles:
-
-Do not modify evidence to make state look correct.
-
-Derived state must be rebuildable from canonical truth.
-
-Uncertainty should remain explicit.
-
-Failure modes justify mechanisms.
-
-Simplicity is a correctness strategy.
-
-When expected state and actual state diverge, find the first point of divergence.
-
-The result is intentionally not a feature-heavy finance application. It is a backend engineering project focused on making financial state explainable, auditable, recoverable, and difficult to corrupt silently.
+The goal is to demonstrate ownership, systems thinking, correctness engineering, and verification without publishing the complete implementation blueprint.
