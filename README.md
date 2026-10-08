@@ -114,7 +114,7 @@ The public repository intentionally focuses on the engineering case study rather
 
 Verification
 
-Current V1 verification includes 179 automated tests.
+Current V1 verification includes 186 automated tests.
 
 Coverage includes areas such as:
 
@@ -145,6 +145,14 @@ disaster recovery,
 deployment correctness,
 
 end-to-end acceptance scenarios.
+
+Runtime failure verification
+
+Runtime failure tests cover post-commit HTTP response loss followed by an idempotent retry, connection pool exhaustion and cleanup, worker process termination before and after commit, and real PostgreSQL deadlock recovery using SQLSTATE 40P01.
+
+These tests verify that relevant financial records, ledger entries, event history, idempotency receipts, and provider checkpoints preserve their business invariants and recover safely.
+
+Worker process termination is tested; PostgreSQL server crashes, host failures, and actual network or proxy disconnects are not covered.
 
 In addition to automated tests, the project has completed:
 
