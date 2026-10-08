@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import datetime
+import multiprocessing
+import time
 import uuid
 
 import pytest
@@ -78,6 +80,172 @@ class FakeAdapter:
         if isinstance(value, BaseException):
             raise value
         return value
+
+
+class ProcessAdapter:
+    def __init__(self, pages):
+        self.pages = pages
+        self.calls = []
+
+    def fetch_page(self, cursor):
+        self.calls.append(cursor)
+        return self.pages[cursor]
+
+
+def _wait_at_process_boundary(connection):
+    if not connection.poll(30):
+        raise TimeoutError("parent did not release child at its test boundary")
+    connection.recv()
+
+
+def _provider_sync_child_before_commit(connection, user_id, connection_id, page):
+    from app.database import engine as child_engine
+    import app.provider_sync_service as sync_service
+
+    try:
+        child_engine.dispose(close=False)
+        original_ingest = sync_service._ingest_external_evidence_locked
+        signaled = False
+
+        def flush_then_wait(*args, **kwargs):
+            nonlocal signaled
+            result = original_ingest(*args, **kwargs)
+            if not signaled:
+                db = args[0]
+                backend_pid = db.execute(text("SELECT pg_backend_pid()")).scalar_one()
+                uncommitted_transactions = db.query(ExternalTransaction).filter(
+                    ExternalTransaction.provider_connection_id == connection_id
+                ).count()
+                uncommitted_evidence = db.query(ExternalTransactionEvidence).filter(
+                    ExternalTransactionEvidence.provider_connection_id == connection_id
+                ).count()
+                connection.send(
+                    {
+                        "phase": "uncommitted",
+                        "backend_pid": backend_pid,
+                        "transactions": uncommitted_transactions,
+                        "evidence": uncommitted_evidence,
+                    }
+                )
+                signaled = True
+                _wait_at_process_boundary(connection)
+            return result
+
+        sync_service._ingest_external_evidence_locked = flush_then_wait
+        sync_service.commit_sync_page(
+            SessionLocal,
+            user_id=user_id,
+            connection_id=connection_id,
+            request_cursor=None,
+            page=page,
+        )
+    except BaseException as exc:
+        try:
+            connection.send({"phase": "error", "error": repr(exc)})
+        except (BrokenPipeError, EOFError, OSError):
+            pass
+        raise
+    finally:
+        connection.close()
+
+
+def _provider_sync_child_after_commit(
+    connection,
+    user_id,
+    connection_id,
+    first_page,
+):
+    from app.database import engine as child_engine
+    import app.provider_sync_service as sync_service
+
+    try:
+        child_engine.dispose(close=False)
+        original_commit = sync_service.commit_sync_page
+
+        def commit_then_wait(*args, **kwargs):
+            result = original_commit(*args, **kwargs)
+            connection.send(
+                {
+                    "phase": "committed",
+                    "page_id": result.page_id,
+                    "next_cursor": result.next_cursor,
+                }
+            )
+            _wait_at_process_boundary(connection)
+            return result
+
+        sync_service.commit_sync_page = commit_then_wait
+        sync_provider_connection(
+            SessionLocal,
+            user_id=user_id,
+            connection_id=connection_id,
+            adapter=ProcessAdapter({None: first_page}),
+        )
+    except BaseException as exc:
+        try:
+            connection.send({"phase": "error", "error": repr(exc)})
+        except (BrokenPipeError, EOFError, OSError):
+            pass
+        raise
+    finally:
+        connection.close()
+
+
+def _receive_process_phase(parent_connection, process, expected_phase, timeout=15):
+    if not parent_connection.poll(timeout):
+        process.join(timeout=0.1)
+        pytest.fail(
+            f"child did not reach {expected_phase!r}; exit code={process.exitcode}"
+        )
+    message = parent_connection.recv()
+    assert message["phase"] == expected_phase, message
+    return message
+
+
+def _terminate_process(process):
+    if process.is_alive():
+        process.terminate()
+    process.join(timeout=5)
+    if process.is_alive():
+        process.kill()
+        process.join(timeout=5)
+    assert not process.is_alive(), "provider-sync child did not terminate"
+
+
+def _wait_for_backend_disconnect(backend_pid, timeout=10):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        with engine.connect() as connection:
+            active = connection.execute(
+                text("SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = :pid)"),
+                {"pid": backend_pid},
+            ).scalar_one()
+        if not active:
+            return
+        time.sleep(0.05)
+    pytest.fail(f"PostgreSQL backend {backend_pid} remained after child termination")
+
+
+def _assert_sync_page_counts(connection_id, *, pages, external_transactions, evidence):
+    db = SessionLocal()
+    try:
+        assert db.query(ProviderSyncPage).filter(
+            ProviderSyncPage.provider_connection_id == connection_id
+        ).count() == pages
+        assert db.query(ExternalTransaction).filter(
+            ExternalTransaction.provider_connection_id == connection_id
+        ).count() == external_transactions
+        assert db.query(ExternalTransactionEvidence).filter(
+            ExternalTransactionEvidence.provider_connection_id == connection_id
+        ).count() == evidence
+        assert db.query(ProviderSyncPageEvidence).join(
+            ProviderSyncPage,
+            ProviderSyncPageEvidence.sync_page_id == ProviderSyncPage.id,
+        ).filter(
+            ProviderSyncPage.provider_connection_id == connection_id
+        ).count() == evidence
+    finally:
+        db.close()
 
 
 def test_sync_commits_page_and_advances_checkpoint_atomically():
@@ -295,6 +463,196 @@ def test_failure_before_page_commit_rolls_back_evidence_and_checkpoint(monkeypat
         ).count() == 0
     finally:
         db.close()
+
+
+def test_process_termination_before_page_commit_rolls_back_all_page_effects():
+    if engine.dialect.name != "postgresql":
+        pytest.skip("Process termination recovery test requires PostgreSQL")
+    if "fork" not in multiprocessing.get_all_start_methods():
+        pytest.skip("Process termination recovery test requires fork support")
+
+    user_id, headers = create_user()
+    connection = create_connection(headers)
+    external_id = f"terminated-before-commit-{uuid.uuid4().hex}"
+    page = ProviderSyncPageData(
+        observations=[observation(external_id, 40)],
+        next_cursor="uncommitted-cursor",
+        has_more=False,
+    )
+    context = multiprocessing.get_context("fork")
+    parent_connection, child_connection = context.Pipe(duplex=True)
+    process = context.Process(
+        target=_provider_sync_child_before_commit,
+        args=(child_connection, user_id, connection["id"], page),
+    )
+    process.start()
+    child_connection.close()
+
+    try:
+        boundary = _receive_process_phase(
+            parent_connection,
+            process,
+            "uncommitted",
+        )
+        assert boundary["transactions"] == 1
+        assert boundary["evidence"] == 1
+
+        db = SessionLocal()
+        try:
+            checkpoint = db.query(ProviderSyncCheckpoint).filter(
+                ProviderSyncCheckpoint.provider_connection_id == connection["id"]
+            ).one()
+            assert checkpoint.committed_cursor is None
+            assert checkpoint.version == 1
+            assert db.query(ExternalTransaction).filter(
+                ExternalTransaction.provider_connection_id == connection["id"],
+                ExternalTransaction.external_transaction_id == external_id,
+            ).count() == 0
+            assert db.query(ExternalTransactionEvidence).filter(
+                ExternalTransactionEvidence.provider_connection_id == connection["id"]
+            ).count() == 0
+        finally:
+            db.close()
+
+        _terminate_process(process)
+        assert process.exitcode != 0
+        _wait_for_backend_disconnect(boundary["backend_pid"])
+
+        db = SessionLocal()
+        try:
+            checkpoint = db.query(ProviderSyncCheckpoint).filter(
+                ProviderSyncCheckpoint.provider_connection_id == connection["id"]
+            ).one()
+            assert checkpoint.committed_cursor is None
+            assert checkpoint.version == 1
+            assert db.query(ExternalTransaction).filter(
+                ExternalTransaction.provider_connection_id == connection["id"],
+                ExternalTransaction.external_transaction_id == external_id,
+            ).count() == 0
+            assert db.query(ExternalTransactionEvidence).filter(
+                ExternalTransactionEvidence.provider_connection_id == connection["id"]
+            ).count() == 0
+        finally:
+            db.close()
+        _assert_sync_page_counts(
+            connection["id"],
+            pages=0,
+            external_transactions=0,
+            evidence=0,
+        )
+    finally:
+        _terminate_process(process)
+        parent_connection.close()
+
+
+def test_process_termination_after_page_commit_resumes_from_visible_checkpoint():
+    if engine.dialect.name != "postgresql":
+        pytest.skip("Process termination recovery test requires PostgreSQL")
+    if "fork" not in multiprocessing.get_all_start_methods():
+        pytest.skip("Process termination recovery test requires fork support")
+
+    user_id, headers = create_user()
+    connection = create_connection(headers)
+    first_external_id = f"terminated-after-commit-first-{uuid.uuid4().hex}"
+    second_external_id = f"terminated-after-commit-second-{uuid.uuid4().hex}"
+    first_page = ProviderSyncPageData(
+        observations=[observation(first_external_id, 41)],
+        next_cursor="committed-cursor",
+        has_more=True,
+    )
+    second_page = ProviderSyncPageData(
+        observations=[observation(second_external_id, 42)],
+        next_cursor="resumed-cursor",
+        has_more=False,
+    )
+    context = multiprocessing.get_context("fork")
+    parent_connection, child_connection = context.Pipe(duplex=True)
+    process = context.Process(
+        target=_provider_sync_child_after_commit,
+        args=(child_connection, user_id, connection["id"], first_page),
+    )
+    process.start()
+    child_connection.close()
+
+    try:
+        boundary = _receive_process_phase(
+            parent_connection,
+            process,
+            "committed",
+        )
+
+        db = SessionLocal()
+        try:
+            checkpoint = db.query(ProviderSyncCheckpoint).filter(
+                ProviderSyncCheckpoint.provider_connection_id == connection["id"]
+            ).one()
+            first_row = db.query(ProviderSyncPage).filter(
+                ProviderSyncPage.id == boundary["page_id"],
+                ProviderSyncPage.provider_connection_id == connection["id"],
+            ).one()
+            assert checkpoint.committed_cursor == "committed-cursor"
+            assert checkpoint.version == 2
+            assert first_row.request_cursor is None
+            assert first_row.next_cursor == "committed-cursor"
+            assert db.query(ExternalTransactionEvidence).filter(
+                ExternalTransactionEvidence.provider_connection_id == connection["id"]
+            ).count() == 1
+        finally:
+            db.close()
+        _assert_sync_page_counts(
+            connection["id"],
+            pages=1,
+            external_transactions=1,
+            evidence=1,
+        )
+
+        _terminate_process(process)
+        assert process.exitcode != 0
+
+        adapter = ProcessAdapter({"committed-cursor": second_page})
+        result = sync_provider_connection(
+            SessionLocal,
+            user_id=user_id,
+            connection_id=connection["id"],
+            adapter=adapter,
+        )
+        assert adapter.calls == ["committed-cursor"]
+        assert result.start_cursor == "committed-cursor"
+        assert result.end_cursor == "resumed-cursor"
+        assert result.pages_committed == 1
+
+        db = SessionLocal()
+        try:
+            checkpoint = db.query(ProviderSyncCheckpoint).filter(
+                ProviderSyncCheckpoint.provider_connection_id == connection["id"]
+            ).one()
+            pages = db.query(ProviderSyncPage).filter(
+                ProviderSyncPage.provider_connection_id == connection["id"]
+            ).order_by(ProviderSyncPage.checkpoint_version_after.asc()).all()
+            external_ids = {
+                row.external_transaction_id
+                for row in db.query(ExternalTransaction).filter(
+                    ExternalTransaction.provider_connection_id == connection["id"]
+                ).all()
+            }
+            assert checkpoint.committed_cursor == "resumed-cursor"
+            assert checkpoint.version == 3
+            assert [(row.request_cursor, row.next_cursor) for row in pages] == [
+                (None, "committed-cursor"),
+                ("committed-cursor", "resumed-cursor"),
+            ]
+            assert external_ids == {first_external_id, second_external_id}
+        finally:
+            db.close()
+        _assert_sync_page_counts(
+            connection["id"],
+            pages=2,
+            external_transactions=2,
+            evidence=2,
+        )
+    finally:
+        _terminate_process(process)
+        parent_connection.close()
 
 
 def test_worker_failure_after_first_committed_page_resumes_from_checkpoint():

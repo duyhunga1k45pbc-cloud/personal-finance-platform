@@ -1,11 +1,12 @@
 from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
-from threading import Barrier
+import time
+from threading import Barrier, Event
 from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event as sqlalchemy_event, text
 from sqlalchemy.exc import DBAPIError, TimeoutError as SQLAlchemyTimeoutError
 from sqlalchemy.orm import sessionmaker
 
@@ -107,6 +108,59 @@ def expense_payload(amount="50000.00", description="lunch"):
         "category": "food",
         "type": "expense",
     }
+
+
+def _postgres_sqlstate(error):
+    pending = [error]
+    seen = set()
+    while pending:
+        current = pending.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        original = getattr(current, "orig", None)
+        code = getattr(original, "pgcode", None)
+        if code is not None:
+            return code
+        pending.extend(
+            [
+                original,
+                getattr(current, "__cause__", None),
+                getattr(current, "__context__", None),
+            ]
+        )
+        pending.extend(getattr(current, "exceptions", ()))
+    return None
+
+
+def _wait_for_postgres_lock_wait(backend_pid, timeout=8):
+    deadline = time.monotonic() + timeout
+    last_activity = None
+    while time.monotonic() < deadline:
+        db = SessionLocal()
+        try:
+            activity = db.execute(
+                text(
+                    "SELECT state, wait_event_type, wait_event, query "
+                    "FROM pg_stat_activity "
+                    "WHERE pid = :pid"
+                ),
+                {"pid": backend_pid},
+            ).one_or_none()
+        finally:
+            db.close()
+        last_activity = activity
+        if (
+            activity is not None
+            and activity.wait_event_type == "Lock"
+            and activity.query.lstrip().lower().startswith("update financial_events")
+        ):
+            return
+        time.sleep(0.025)
+    pytest.fail(
+        f"PostgreSQL backend {backend_pid} never waited on the canonical event UPDATE; "
+        f"last activity={last_activity!r}"
+    )
 
 
 def test_create_requires_explicit_idempotency_key():
@@ -543,6 +597,202 @@ def test_two_real_postgres_writers_cannot_both_claim_same_version():
             .count()
             == 2
         )
+    finally:
+        db.close()
+
+
+def test_postgres_deadlock_rolls_back_and_same_command_recovers():
+    if engine.dialect.name != "postgresql":
+        pytest.skip("Deadlock recovery test is PostgreSQL-specific")
+
+    user_id, headers = create_user()
+    created = client.post(
+        "/transactions",
+        json=expense_payload("100000.00", "deadlock-base"),
+        headers=command_headers(headers),
+    )
+    assert created.status_code == 200
+    transaction_id = created.json()["id"]
+    expected_version = created.json()["canonical_version"]
+    event_id = created.json()["canonical_event_id"]
+    idempotency_key = uuid4().hex
+    update_headers = command_headers(
+        headers,
+        key=idempotency_key,
+        expected_version=expected_version,
+    )
+    update_payload = expense_payload("250000.00", "after-deadlock")
+
+    event_claimed = Event()
+    api_backend_pid = {}
+    blocker = SessionLocal()
+
+    def set_transaction_timeout(connection):
+        connection.exec_driver_sql("SET LOCAL statement_timeout = '12000ms'")
+
+    def capture_canonical_event_claim(
+        connection,
+        cursor,
+        statement,
+        parameters,
+        context,
+        executemany,
+    ):
+        normalized = " ".join(statement.lower().split())
+        if normalized.startswith(
+            "update financial_events set version=financial_events.version"
+        ) and "pid" not in api_backend_pid:
+            api_backend_pid["pid"] = connection.exec_driver_sql(
+                "SELECT pg_backend_pid()"
+            ).scalar_one()
+            event_claimed.set()
+
+    sqlalchemy_event.listen(engine, "begin", set_transaction_timeout)
+    sqlalchemy_event.listen(engine, "after_cursor_execute", capture_canonical_event_claim)
+    executor = ThreadPoolExecutor(max_workers=1)
+    request_future = None
+    blocker_sqlstate = None
+    request_sqlstate = None
+    first_response = None
+
+    try:
+        blocker.query(Transaction).filter(
+            Transaction.id == transaction_id
+        ).with_for_update().one()
+        blocker_backend_pid = blocker.execute(
+            text("SELECT pg_backend_pid()")
+        ).scalar_one()
+
+        request_future = executor.submit(
+            client.put,
+            f"/transactions/{transaction_id}",
+            json=update_payload,
+            headers=update_headers,
+        )
+        assert event_claimed.wait(timeout=10), "request never claimed the canonical event row"
+        assert api_backend_pid["pid"] != blocker_backend_pid
+        _wait_for_postgres_lock_wait(api_backend_pid["pid"])
+
+        try:
+            blocker.query(FinancialEvent).filter(
+                FinancialEvent.id == event_id
+            ).with_for_update().one()
+            blocker.commit()
+        except DBAPIError as exc:
+            blocker_sqlstate = _postgres_sqlstate(exc)
+            blocker.rollback()
+
+        try:
+            first_response = request_future.result(timeout=15)
+        except BaseException as exc:
+            request_sqlstate = _postgres_sqlstate(exc)
+
+        assert blocker_sqlstate in {None, "40P01"}
+        assert request_sqlstate in {None, "40P01"}
+        assert (blocker_sqlstate == "40P01") != (request_sqlstate == "40P01"), (
+            blocker_sqlstate,
+            request_sqlstate,
+        )
+        if first_response is not None:
+            assert first_response.status_code == 200
+        else:
+            assert request_sqlstate == "40P01"
+    finally:
+        blocker.rollback()
+        blocker.close()
+        sqlalchemy_event.remove(engine, "begin", set_transaction_timeout)
+        sqlalchemy_event.remove(engine, "after_cursor_execute", capture_canonical_event_claim)
+        if request_future is not None and not request_future.done():
+            try:
+                request_future.result(timeout=15)
+            except BaseException:
+                pass
+        executor.shutdown(wait=True, cancel_futures=True)
+
+    lock_check = SessionLocal()
+    try:
+        lock_check.query(Transaction).filter(
+            Transaction.id == transaction_id
+        ).with_for_update(nowait=True).one()
+        lock_check.query(FinancialEvent).filter(
+            FinancialEvent.id == event_id
+        ).with_for_update(nowait=True).one()
+        lock_check.rollback()
+    finally:
+        lock_check.close()
+
+    if request_sqlstate == "40P01":
+        db = SessionLocal()
+        try:
+            transaction = db.query(Transaction).filter(
+                Transaction.id == transaction_id
+            ).one()
+            event_row = db.query(FinancialEvent).filter(
+                FinancialEvent.id == event_id
+            ).one()
+            entry = db.query(FinancialEventEntry).filter(
+                FinancialEventEntry.financial_event_id == event_id
+            ).one()
+            assert transaction.amount == Decimal("100000.00")
+            assert event_row.version == expected_version
+            assert entry.amount == Decimal("-100000.00")
+            assert db.query(FinancialEventHistory).filter(
+                FinancialEventHistory.financial_event_id == event_id
+            ).count() == 1
+            assert db.query(CommandReceipt).filter(
+                CommandReceipt.user_id == user_id,
+                CommandReceipt.command_type == "UPDATE_TRANSACTION",
+                CommandReceipt.idempotency_key == idempotency_key,
+            ).count() == 0
+        finally:
+            db.close()
+
+    retry = client.put(
+        f"/transactions/{transaction_id}",
+        json=update_payload,
+        headers=update_headers,
+    )
+    assert retry.status_code == 200
+    if first_response is not None:
+        assert retry.json() == first_response.json()
+
+    db = SessionLocal()
+    try:
+        transaction = db.query(Transaction).filter(
+            Transaction.id == transaction_id,
+            Transaction.user_id == user_id,
+        ).one()
+        event_row = db.query(FinancialEvent).filter(
+            FinancialEvent.id == event_id,
+            FinancialEvent.user_id == user_id,
+        ).one()
+        entries = db.query(FinancialEventEntry).filter(
+            FinancialEventEntry.financial_event_id == event_id
+        ).all()
+        history = db.query(FinancialEventHistory).filter(
+            FinancialEventHistory.financial_event_id == event_id
+        ).order_by(FinancialEventHistory.event_version.asc()).all()
+        receipt = db.query(CommandReceipt).filter(
+            CommandReceipt.user_id == user_id,
+            CommandReceipt.command_type == "UPDATE_TRANSACTION",
+            CommandReceipt.idempotency_key == idempotency_key,
+        ).one()
+
+        assert db.query(Transaction).filter(Transaction.user_id == user_id).count() == 1
+        assert db.query(FinancialEvent).filter(FinancialEvent.user_id == user_id).count() == 1
+        assert transaction.amount == Decimal("250000.00")
+        assert transaction.description == "after-deadlock"
+        assert event_row.version == expected_version + 1
+        assert len(entries) == 1
+        assert entries[0].amount == Decimal("-250000.00")
+        assert [row.event_version for row in history] == [1, 2]
+        assert [row.transition_type for row in history] == ["CREATED", "CORRECTED"]
+        assert db.query(CommandReceipt).filter(
+            CommandReceipt.user_id == user_id,
+            CommandReceipt.command_type == "UPDATE_TRANSACTION",
+            CommandReceipt.idempotency_key == idempotency_key,
+        ).count() == 1
+        assert receipt.response_body == retry.json()
     finally:
         db.close()
 
