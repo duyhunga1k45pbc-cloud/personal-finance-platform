@@ -5,7 +5,9 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy import create_engine, text
+from sqlalchemy.exc import DBAPIError, TimeoutError as SQLAlchemyTimeoutError
+from sqlalchemy.orm import sessionmaker
 
 from app.canonical_service import (
     ConcurrentModificationError,
@@ -13,15 +15,63 @@ from app.canonical_service import (
 )
 from app.database import Base, SessionLocal, engine
 from app.main import app
+from app.routers import transactions as transaction_router
 from app.models import (
     CommandReceipt,
     FinancialEvent,
+    FinancialEventEntry,
     FinancialEventHistory,
     Transaction,
 )
 
 client = TestClient(app)
 Base.metadata.create_all(bind=engine)
+
+
+class _LoseSuccessfulTransactionResponse:
+    def __init__(self, asgi_app, verify_committed):
+        self.asgi_app = asgi_app
+        self.verify_committed = verify_committed
+        self.lost = False
+
+    async def __call__(self, scope, receive, send):
+        if (
+            scope.get("type") != "http"
+            or scope.get("method") != "POST"
+            or scope.get("path") != "/transactions"
+        ):
+            await self.asgi_app(scope, receive, send)
+            return
+
+        async def lose_success_response(message):
+            if (
+                message["type"] == "http.response.start"
+                and message["status"] == 200
+                and not self.lost
+            ):
+                self.verify_committed()
+                self.lost = True
+                raise OSError("simulated loss of committed HTTP response")
+            await send(message)
+
+        await self.asgi_app(scope, receive, lose_success_response)
+
+
+@pytest.fixture
+def isolated_single_connection_engine():
+    if engine.dialect.name != "postgresql":
+        pytest.skip("Runtime database failure tests require PostgreSQL")
+
+    isolated_engine = create_engine(
+        engine.url,
+        pool_size=1,
+        max_overflow=0,
+        pool_timeout=0.1,
+    )
+    try:
+        yield isolated_engine
+    finally:
+        isolated_engine.dispose()
 
 
 def create_user():
@@ -116,6 +166,145 @@ def test_same_create_command_replays_same_response_without_duplicate_event():
         )
     finally:
         db.close()
+
+
+@pytest.mark.skipif(
+    engine.dialect.name != "postgresql",
+    reason="Committed response-loss test requires PostgreSQL",
+)
+def test_retry_replays_command_after_committed_http_response_is_lost():
+    user_id, headers = create_user()
+    key = uuid4().hex
+    payload = expense_payload("83500.00", "response-loss")
+    persisted = {}
+
+    def verify_commit_before_response_loss():
+        db = SessionLocal()
+        try:
+            receipt = (
+                db.query(CommandReceipt)
+                .filter(
+                    CommandReceipt.user_id == user_id,
+                    CommandReceipt.command_type == "CREATE_TRANSACTION",
+                    CommandReceipt.idempotency_key == key,
+                )
+                .one()
+            )
+            transaction = (
+                db.query(Transaction)
+                .filter(
+                    Transaction.user_id == user_id,
+                    Transaction.id == receipt.transaction_id,
+                )
+                .one()
+            )
+            event = (
+                db.query(FinancialEvent)
+                .filter(FinancialEvent.legacy_transaction_id == transaction.id)
+                .one()
+            )
+            assert transaction.amount == Decimal("83500.00")
+            assert event.version == 1
+            assert receipt.response_body["id"] == transaction.id
+            persisted["response_body"] = receipt.response_body
+        finally:
+            db.close()
+
+    loss_app = _LoseSuccessfulTransactionResponse(
+        app,
+        verify_commit_before_response_loss,
+    )
+    with TestClient(loss_app) as lossy_client:
+        with pytest.raises(OSError, match="simulated loss"):
+            lossy_client.post(
+                "/transactions",
+                json=payload,
+                headers=command_headers(headers, key=key),
+            )
+
+    assert loss_app.lost is True
+    assert "response_body" in persisted
+
+    retry = client.post(
+        "/transactions",
+        json=payload,
+        headers=command_headers(headers, key=key),
+    )
+
+    assert retry.status_code == 200
+    assert retry.json() == persisted["response_body"]
+
+    db = SessionLocal()
+    try:
+        transaction = (
+            db.query(Transaction)
+            .filter(Transaction.user_id == user_id)
+            .one()
+        )
+        event = (
+            db.query(FinancialEvent)
+            .filter(FinancialEvent.legacy_transaction_id == transaction.id)
+            .one()
+        )
+        assert db.query(Transaction).filter(Transaction.user_id == user_id).count() == 1
+        assert db.query(FinancialEvent).filter(FinancialEvent.user_id == user_id).count() == 1
+        assert db.query(FinancialEventEntry).filter(
+            FinancialEventEntry.financial_event_id == event.id
+        ).count() == 1
+        assert db.query(FinancialEventHistory).filter(
+            FinancialEventHistory.financial_event_id == event.id
+        ).count() == 1
+        assert db.query(CommandReceipt).filter(
+            CommandReceipt.user_id == user_id,
+            CommandReceipt.command_type == "CREATE_TRANSACTION",
+            CommandReceipt.idempotency_key == key,
+        ).count() == 1
+    finally:
+        db.close()
+
+
+def test_connection_pool_exhaustion_recovers_after_checkout_is_released(
+    isolated_single_connection_engine,
+):
+    held_connection = isolated_single_connection_engine.connect()
+    try:
+        with pytest.raises(SQLAlchemyTimeoutError):
+            isolated_single_connection_engine.connect()
+    finally:
+        held_connection.close()
+
+    with isolated_single_connection_engine.connect() as recovered_connection:
+        assert recovered_connection.execute(text("SELECT 1")).scalar_one() == 1
+
+
+@pytest.mark.parametrize("raise_error", [False, True], ids=["normal", "exception"])
+def test_transaction_db_dependency_releases_pool_connection(
+    isolated_single_connection_engine,
+    monkeypatch,
+    raise_error,
+):
+    isolated_session_factory = sessionmaker(
+        autocommit=False,
+        autoflush=False,
+        bind=isolated_single_connection_engine,
+    )
+    monkeypatch.setattr(transaction_router, "SessionLocal", isolated_session_factory)
+
+    dependency = transaction_router.get_db()
+    db = next(dependency)
+    assert db.execute(text("SELECT 1")).scalar_one() == 1
+    assert isolated_single_connection_engine.pool.checkedout() == 1
+
+    if raise_error:
+        with pytest.raises(RuntimeError, match="simulated request failure"):
+            dependency.throw(RuntimeError("simulated request failure"))
+    else:
+        with pytest.raises(StopIteration):
+            next(dependency)
+
+    assert isolated_single_connection_engine.pool.checkedout() == 0
+    with isolated_single_connection_engine.connect() as recovered_connection:
+        assert recovered_connection.execute(text("SELECT 1")).scalar_one() == 1
 
 
 def test_same_idempotency_key_with_different_payload_is_rejected():
