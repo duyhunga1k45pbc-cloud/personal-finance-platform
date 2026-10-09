@@ -37,6 +37,7 @@ def _owned_active_event(db: Session, *, user_id: int, event_id: int) -> Financia
             FinancialEvent.user_id == user_id,
             FinancialEvent.lifecycle_state == "ACTIVE",
         )
+        .with_for_update()
         .one_or_none()
     )
     if event is None:

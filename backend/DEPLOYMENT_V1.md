@@ -32,7 +32,7 @@ A V1 release should be operated in this order:
 ```text
 verified backup / recovery capability
         ↓
-alembic upgrade head
+alembic -x allow_production_migrations=finance_db upgrade head
         ↓
 python -m scripts.deployment_preflight
         ↓
@@ -48,6 +48,9 @@ observe 5xx, DB errors, reconciliation and projection signals
 
 The application never runs `alembic upgrade head` automatically. Schema change
 and traffic-serving are separate state transitions with separate failure modes.
+Alembic refuses `finance_db` unless the migration invocation explicitly supplies
+`-x allow_production_migrations=finance_db`; pytest continues to reject that
+database regardless of Alembic arguments.
 
 ## Production launcher
 

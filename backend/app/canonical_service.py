@@ -134,6 +134,7 @@ def sync_canonical_from_legacy_transaction(
     event = (
         db.query(FinancialEvent)
         .filter(FinancialEvent.legacy_transaction_id == transaction.id)
+        .with_for_update()
         .one_or_none()
     )
 
@@ -233,6 +234,7 @@ def void_canonical_for_legacy_transaction(
     event = (
         db.query(FinancialEvent)
         .filter(FinancialEvent.legacy_transaction_id == legacy_transaction_id)
+        .with_for_update()
         .one_or_none()
     )
     if event is None:
@@ -540,6 +542,7 @@ def correct_legacy_transaction_with_expected_version(
     event = (
         db.query(FinancialEvent)
         .filter(FinancialEvent.legacy_transaction_id == transaction.id)
+        .with_for_update()
         .one_or_none()
     )
     if event is None:
@@ -618,6 +621,7 @@ def void_canonical_with_expected_version(
     event = (
         db.query(FinancialEvent)
         .filter(FinancialEvent.legacy_transaction_id == legacy_transaction_id)
+        .with_for_update()
         .one_or_none()
     )
     if event is None:

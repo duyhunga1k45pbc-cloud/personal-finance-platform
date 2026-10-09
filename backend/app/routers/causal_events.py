@@ -86,6 +86,28 @@ def _commit_or_replay(
     return response_body
 
 
+def _replay_or_raise_causal_error(
+    db: Session,
+    *,
+    user_id: int,
+    command_type: str,
+    key: str,
+    request_hash: str,
+    error: CausalEventError,
+) -> JSONResponse:
+    db.rollback()
+    stored = _stored_or_none(
+        db,
+        user_id=user_id,
+        command_type=command_type,
+        key=key,
+        request_hash=request_hash,
+    )
+    if stored is not None:
+        return stored
+    raise HTTPException(status_code=422, detail=str(error)) from error
+
+
 def _causal_response(db: Session, event) -> dict:
     link = (
         db.query(FinancialEventLink)
@@ -154,8 +176,14 @@ def create_refund(
             reason="create_refund",
         )
     except CausalEventError as exc:
-        db.rollback()
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return _replay_or_raise_causal_error(
+            db,
+            user_id=current_user.id,
+            command_type=command_type,
+            key=key,
+            request_hash=request_hash,
+            error=exc,
+        )
 
     response_body = _causal_response(db, event)
     add_command_receipt(
@@ -215,8 +243,14 @@ def create_reversal(
             reason="create_reversal",
         )
     except CausalEventError as exc:
-        db.rollback()
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return _replay_or_raise_causal_error(
+            db,
+            user_id=current_user.id,
+            command_type=command_type,
+            key=key,
+            request_hash=request_hash,
+            error=exc,
+        )
 
     response_body = _causal_response(db, event)
     add_command_receipt(

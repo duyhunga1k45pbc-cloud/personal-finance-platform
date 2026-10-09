@@ -600,18 +600,29 @@ async def test_concurrent_async_sessions_preserve_expected_version_guard(
                         ),
                         {"pid": writer_pids["b"]},
                     ).mappings().one_or_none()
+                waiting_query = (
+                    " ".join(last_activity["query"].lower().split())
+                    if last_activity is not None
+                    else ""
+                )
                 if (
                     last_activity is not None
                     and last_activity["wait_event_type"] == "Lock"
-                    and "update financial_events set version=financial_events.version"
-                    in " ".join(last_activity["query"].lower().split())
+                    and (
+                        (
+                            "for update" in waiting_query
+                            and "from financial_events" in waiting_query
+                        )
+                        or "update financial_events set version=financial_events.version"
+                        in waiting_query
+                    )
                 ):
                     break
                 await asyncio.sleep(0.025)
             else:
                 pytest.fail(
-                    "Writer B did not reach PostgreSQL lock contention on the "
-                    "guarded financial_events UPDATE; "
+                    "Writer B did not reach PostgreSQL row-lock contention on "
+                    "the guarded financial_events row; "
                     f"last activity={last_activity!r}"
                 )
 
