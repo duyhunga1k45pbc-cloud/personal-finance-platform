@@ -1,298 +1,430 @@
 # Personal Finance Platform
 
-**A correctness-focused backend engineering case study built with FastAPI, PostgreSQL, and SQLAlchemy.**
+**A correctness-focused financial backend engineering case study built with FastAPI, PostgreSQL, and SQLAlchemy.**
 
-This project started as a conventional income/expense CRUD API and evolved into a backend engineering case study focused on a harder question:
+This project explores how financial state can remain consistent and recoverable when requests retry, concurrent operations conflict, transactions fail, external evidence disagrees, or execution conditions change.
 
-**How can financial state remain correct when requests retry, concurrent operations conflict, data is corrected, external providers disagree, workers fail, database schemas evolve, or execution conditions change?**
+It started as a conventional income/expense CRUD application and evolved into a backend engineering project focused on **business invariants, transaction boundaries, concurrency control, idempotency, recovery, and evidence-based verification**.
 
-The project emphasizes correctness, auditability, recoverability, and operational safety rather than feature count.
+Rather than optimizing for feature count, the project emphasizes understanding failure modes, implementing explicit correctness guarantees, and testing those guarantees against real PostgreSQL behavior.
 
-It follows a **modular-monolith architecture** to keep financial domain behavior explicit, understandable, and testable without introducing unnecessary distributed-system complexity.
+**Project status:** Engineering portfolio and experimental application. Not production-deployed.
+
+## Engineering Highlights
+
+| Area | Implemented and verified behavior |
+|---|---|
+| Financial domain modeling | Canonical financial events, signed entries, transfers, refunds, reversals, and corrections |
+| Concurrency control | PostgreSQL row locking, expected-version guards, deterministic conflicting transactions |
+| Transactional idempotency | Database-backed command receipts, retry recovery, concurrent same-key replay |
+| Historical integrity | Append-only financial history and causal event relationships |
+| Reconciliation | Explicit handling of conflicting and incomplete external evidence |
+| Recovery | Rebuildable projections, canonical-state audits, backup/restore exercises |
+| Failure injection | Commit acknowledgment loss, worker termination, deadlocks, connection-pool exhaustion |
+| Security | JWT authentication, ownership enforcement, cross-user authorization verification |
+| Schema evolution | Alembic migrations, rollback verification, historical backfill, revision compatibility checks |
+| Async correctness | SQLAlchemy AsyncSession, cancellation, connection lifecycle, native-async experiments |
+
+**Latest production-suite verification:** 208 automated tests passed on a disposable PostgreSQL database, with 270 warnings.
+
+The verification applies to the scenarios exercised by the tests. It does not establish exhaustive correctness or production readiness.
 
 ---
 
-## Engineering Focus
+## Case Study: Preventing Concurrent Over-Refunds
 
-The system is organized around several areas of correctness:
+One of the project's most important findings was a reproducible concurrency defect in the refund workflow.
 
-| Area | Engineering concern |
+### The Business Invariant
+
+For an original expense, the total amount of active refunds must not exceed the original refundable amount.
+
+For example:
+
+- Original expense: 100
+- Refund request A: 60
+- Refund request B: 60
+
+Both refunds must not succeed.
+
+### The Failure
+
+Before the concurrency fix, two independent PostgreSQL transactions could execute the following sequence:
+
+1. Transaction A reads the remaining refundable balance as 100.
+2. Transaction B independently reads the same remaining balance as 100.
+3. Both transactions validate their refund amounts against the stale balance.
+4. Both create their own refund events and causal links.
+5. Both commit successfully.
+
+The resulting active refund total becomes **120 against an original expense of 100**.
+
+Each individual transaction is atomic, but the aggregate business invariant is violated.
+
+This demonstrates that transaction atomicity and idempotency do not, by themselves, guarantee correctness across concurrent operations.
+
+### Root Cause
+
+Refund eligibility was evaluated without first serializing commands against their shared original financial event.
+
+The application already implemented the business invariant for sequential execution. The missing guarantee was concurrency protection around the eligibility check and subsequent write.
+
+### The Fix
+
+The refund and reversal paths now acquire a PostgreSQL `SELECT FOR UPDATE` row lock on the original financial event before evaluating eligibility.
+
+The lock remains held until the transaction commits or rolls back.
+
+Related correction and void operations follow the same original-event locking convention before evaluating causal dependencies.
+
+Under the verified PostgreSQL `READ COMMITTED` isolation level, a competing transaction waits for the lock and then reevaluates eligibility against the committed state.
+
+### Preserving Idempotency
+
+The serialization change also exposed an interaction with concurrent idempotent retries.
+
+Two requests using the same command identity may compete for the original-event lock.
+
+After the winning request commits, the waiting request must recover the already committed command result rather than fail merely because the refundable balance has changed.
+
+The implementation includes receipt rechecking after causal rejection and rollback to preserve the same-key replay contract.
+
+### Verification Evidence
+
+A deterministic PostgreSQL regression test was added to reproduce the original failure and verify the corrected behavior.
+
+The tests confirm:
+
+- The vulnerable implementation permitted two successful 60-unit refunds against an expense of 100.
+- The corrected implementation prevents both conflicting refunds from committing.
+- PostgreSQL lock contention is observed.
+- The persisted refund aggregate remains within the original amount.
+- Concurrent same-key retries recover the winning response without duplicating financial effects.
+- Competing refund and reversal commands respect the shared serialization boundary.
+- Relevant canonical records, causal links, historical records, and audit state remain consistent in the tested scenarios.
+
+The full production test suite subsequently passed with **208 tests** on an isolated PostgreSQL database.
+
+**Implementation references:**
+
+- `backend/app/causal_service.py`
+- `backend/app/canonical_service.py`
+- `backend/app/routers/causal_events.py`
+- `backend/tests/test_refund_concurrency.py`
+- `backend/tests/test_async_sqlalchemy_correctness.py`
+
+This case study documents a verified failure, its root cause, an implemented correction, and regression evidence. It does not claim that all possible concurrency defects have been eliminated.
+
+---
+
+## System Structure
+
+The application is implemented as a **modular monolith**.
+
+Its design keeps financial business rules and transaction boundaries explicit without introducing distributed infrastructure that is unnecessary for the project's current scope.
+
+The main responsibilities are separated into:
+
+| Component | Responsibility |
 |---|---|
-| Business correctness | Financial events preserve their intended meaning and accounting relationships. |
-| State correctness | Retries, concurrency, corrections, and external updates do not silently corrupt canonical financial state. |
-| Security correctness | Authentication and authorization boundaries prevent unauthorized access and state transitions. |
-| Operational correctness | Runtime failures, recovery, and incompatible database revisions have explicit, verifiable outcomes. |
-| Execution correctness | Transaction, resource, and request-context behavior remain consistent across tested execution and failure scenarios. |
+| FastAPI routers | HTTP request handling, authentication dependencies, validation, and responses |
+| Business services | Financial operations, domain invariants, causal rules, and transaction coordination |
+| Canonical financial state | Authoritative financial events, entries, and relationships |
+| Financial history | Persistent historical evidence of state changes |
+| Provider integration | External data ingestion, normalization, and reconciliation |
+| Derived projections | Rebuildable balances and financial summaries |
+| Operational mechanisms | Idempotency, readiness, migrations, auditing, and recovery |
 
-## Why Financial Correctness Is Difficult
-
-A finance backend must do more than store records.
-
-It must handle questions such as:
-
-- Can a retried request create duplicate financial effects?
-- Can concurrent operations both succeed against the same expected version?
-- Can a failed operation leave partially committed financial state?
-- How should corrections, refunds, reversals, and transfers affect financial history?
-- What happens when external data is stale, ambiguous, or conflicting?
-- Can derived balances and summaries be rebuilt from trusted state?
-- Can database migrations preserve existing financial meaning?
-- Can cancellation, resource exhaustion, or worker termination leave state inconsistent?
-- Can different execution models preserve the same financial correctness contracts?
-
-These failure scenarios drive the design and verification.
-
-## High-Level Architecture
+A simplified financial data flow is:
 
 ```text
-                  External Data Providers
-                            |
-                            v
-                       Data Ingestion
-                            |
-                            v
-                        Normalization
-                            |
-                            v
-                   Canonical Financial State
-                            |
-                 +----------+----------+
-                 |                     |
-                 v                     v
-            Event History      Derived Projections
-                 |                     |
-                 +----------+----------+
-                            |
-                            v
-                         FastAPI API
+External Financial Providers
+             |
+             v
+       Data Ingestion
+             |
+             v
+        Normalization
+             |
+             v
+   Canonical Financial State
+             |
+       +-----+------+
+       |            |
+       v            v
+  Event History   Derived
+                  Projections
+       |            |
+       +-----+------+
+             |
+             v
+         FastAPI API
 ```
 
-**Cross-cutting concerns:**
+Client-initiated financial commands enter through the API and are processed by business services within explicit database transaction boundaries.
 
-Authentication · Authorization · Idempotency  
-Transaction Safety · Auditability · Recovery  
-Readiness · Observability
+Cross-cutting concerns include authentication, authorization, idempotency, concurrency control, auditability, and operational recovery.
 
-The architecture separates canonical financial state, historical evidence, and rebuildable derived views.
+The project does not claim to implement a production distributed event-processing platform.
 
 ---
 
-## Key Engineering Properties
+## Core Engineering Properties
 
-### Canonical Financial State
+### 1. Financial Domain Invariants
 
-Financial operations are modeled through explicit domain semantics rather than interchangeable transaction records.
+Financial operations are represented through explicit domain semantics instead of treating all transactions as interchangeable records.
 
-The system distinguishes income, expenses, transfers, refunds, reversals, corrections, and reconciliation adjustments.
+Supported concepts include:
 
-Canonical events, signed financial entries, and historical records provide the foundation for verifying financial state transitions.
+- Income and expenses
+- Transfers between accounts
+- Refunds and reversals
+- Corrections and void operations
+- Reconciliation adjustments
+- Canonical events and signed financial entries
 
-### Transactional Idempotency
+The implementation uses these distinctions to preserve financial meaning across state transitions.
 
-Retried commands are protected from creating duplicate business effects through database-backed idempotency constraints and transactional receipt persistence.
+Business invariants are enforced within the application and verified through database-backed tests.
 
-Verification includes a scenario where the database commits successfully but the caller does not receive the expected response.
+### 2. Transactional Idempotency
 
-A retry using the same command identity must recover the committed outcome without applying the operation again.
+Financial commands use database-backed idempotency records to prevent the same command from applying its effects repeatedly.
 
-### Concurrency Control
+Verification includes:
 
-Concurrent financial corrections use PostgreSQL transaction semantics and expected-version guards.
+- Repeated requests with the same command identity
+- Conflicting reuse of an idempotency key
+- Concurrent same-key commands
+- Successful commits followed by simulated response loss
+- Recovery of previously committed command responses
 
-The system is tested against conflicting updates, stale versions, and actual PostgreSQL lock contention.
+The intended guarantee is that retrying an already committed command does not duplicate its financial effect.
 
-Competing operations must not both successfully apply changes against the same expected canonical event version.
+### 3. Concurrency and Version Control
 
-### Explicit Reconciliation
+The system uses PostgreSQL transaction semantics to protect financial state against selected concurrent modifications.
 
-External financial evidence and internal canonical state are treated as separate concerns.
+Implemented mechanisms include:
 
-Conflicting or incomplete observations are surfaced explicitly rather than silently converted into authoritative financial changes.
+- Expected-version checks
+- Row-level locking
+- Shared original-event serialization for causal commands
+- Stale-write rejection
+- Database-backed concurrency regression tests
 
-Controlled reconciliation workflows preserve the distinction between observed evidence and accepted financial state.
+Tests exercise actual PostgreSQL lock contention rather than relying exclusively on mocked database behavior.
 
-### Rebuildable Derived State
+The verified guarantees depend on the transaction boundaries and isolation assumptions exercised by those tests.
 
-Balances and summaries are derived from canonical financial state.
+### 4. Historical Integrity and Causal Relationships
 
-Projection data can be deleted, reconstructed, and verified against trusted source records.
+Canonical financial events, signed entries, and append-only historical records provide evidence of financial state evolution.
 
-### Security Boundaries
+Causal relationships connect operations such as refunds and reversals to their original financial events.
+
+Historical evidence supports:
+
+- State-transition verification
+- Canonical audits
+- Investigation of inconsistent financial relationships
+- Recovery and reconciliation workflows
+
+The application distinguishes recorded financial history from derived representations of that history.
+
+### 5. Explicit Reconciliation
+
+External financial evidence and accepted canonical state are treated as separate concerns.
+
+External observations can be stale, incomplete, duplicated, or contradictory.
+
+Reconciliation workflows preserve the distinction between:
+
+- What an external provider reports
+- What the application currently records
+- What has been accepted as canonical financial state
+
+Conflicting evidence is surfaced rather than silently converted into an authoritative financial update.
+
+### 6. Rebuildable Projections
+
+Balances and financial summaries are derived from canonical financial records.
+
+Projection tests verify that derived data can be removed, reconstructed, and checked against its source.
+
+This reduces dependence on projections as independent sources of financial truth.
+
+### 7. Security Boundaries
 
 The application implements JWT-based authentication and user-scoped authorization.
 
-Security verification includes token tampering, invalid credentials, deleted-user identities, and unauthorized cross-user access or modification.
+Security verification includes:
 
-The implementation is not presented as a complete OAuth2/OIDC identity platform or shared multi-service authorization framework.
+- Invalid and tampered tokens
+- Invalid credentials
+- Deleted-user identities
+- Unauthorized cross-user reads
+- Unauthorized cross-user modifications
+- Ownership checks on financial resources
 
-### Schema Evolution Safety
+The application does not claim to provide a complete OAuth2/OIDC identity platform or a shared multi-service authorization framework.
 
-Alembic manages schema changes and historical data transformations.
+### 8. Schema Evolution Safety
 
-Verification covers transactional rollback after an injected migration failure, readiness rejection of incompatible revisions, and preservation of legacy financial semantics during canonical-state backfill.
+Database schema changes are managed with Alembic.
 
-These tests do not establish zero-downtime or rolling-upgrade compatibility.
+Verification includes:
+
+- Transactional rollback after injected migration failures
+- Preservation of historical financial meaning during canonical-state backfill
+- Readiness rejection of incompatible schema revisions
+- Migration tests using disposable PostgreSQL databases
+
+The test infrastructure rejects the protected `finance_db` database as a pytest target.
+
+Production-target migrations are blocked by default and require explicit per-invocation authorization.
+
+These protections do not establish zero-downtime or rolling-upgrade compatibility.
 
 ---
 
-## Verification
+## Verification Strategy
 
-**205 automated tests passed in the latest reported local PostgreSQL-backed regression run, with 256 warnings.**
+The project follows a failure-oriented verification approach:
 
-The suite covers business behavior, transactional correctness, authentication, authorization, runtime failures, schema evolution, async database execution, native-async financial operations, and async middleware behavior.
+1. Identify the business behavior and its correctness invariant.
+2. Determine which transaction, concurrency, or execution conditions could violate it.
+3. Construct a reproducible scenario.
+4. Verify actual behavior against PostgreSQL where database semantics matter.
+5. Introduce or correct the protection mechanism.
+6. Rerun the scenario and relevant regression tests.
+7. Record the verified guarantee and its limitations.
+
+Tests are treated as evidence for defined claims, not proof that every possible system state has been explored.
+
+### Latest Production Test Run
+
+| Result | Value |
+|---|---|
+| Passed | 208 |
+| Warnings | 270 |
+| Database | Disposable PostgreSQL database |
+| Schema | Migrated to the current Alembic head |
+| Outcome | All selected production-suite tests passed |
+
+This run excluded explicitly experimental research tests and private research artifacts.
+
+The reported results were obtained in a local verification environment. They do not imply successful production deployment or universal coverage of runtime failure modes.
 
 ### Verification Coverage
 
 | Area | Selected scenarios |
 |---|---|
-| Financial semantics | Canonical events, signed entries, transfers, refunds, reversals, corrections |
-| Transaction correctness | Idempotent replay, duplicate-command conflicts, expected-version concurrency |
+| Financial semantics | Canonical events, entries, transfers, refunds, reversals, corrections |
+| Transaction correctness | Idempotent replay, competing commands, expected-version conflicts |
+| Concurrency | Row locking, lock contention, stale reads, refund/reversal exclusion |
 | Provider integration | Evidence handling, lifecycle state, checkpoints, reconciliation |
-| Derived state | Projection rebuilding and canonical-state consistency |
-| Security | JWT validation, account ownership, cross-user authorization |
-| Runtime failures | Lost response after commit, worker termination, pool exhaustion, PostgreSQL deadlocks |
-| Recovery | Backup/restore, projection rebuilding, canonical-state audits |
-| Deployment | Revision compatibility, preflight checks, readiness, graceful shutdown |
-| Schema evolution | Migration rollback, historical data backfill invariants |
-| Async SQLAlchemy bridge | Cancellation, guarded writes, session ownership, pool recovery |
-| Native-async financial operations | Transaction atomicity, idempotency, cancellation, lock contention, pool recovery |
-| Python async middleware | Cancellation propagation, request-context cleanup, concurrent context isolation |
+| Derived state | Projection rebuilding and canonical consistency |
+| Security | JWT validation, ownership, cross-user authorization |
+| Runtime failures | Response loss, worker termination, pool exhaustion, deadlocks |
+| Recovery | Backup/restore, projection reconstruction, canonical audits |
+| Deployment | Preflight checks, revision compatibility, readiness, graceful shutdown |
+| Schema evolution | Rollback, historical backfill invariants, incompatible revisions |
+| Async execution | AsyncSession behavior, cancellation, session ownership, lock contention |
+| Middleware | Cancellation propagation and request-context isolation |
 
-### Runtime Failure Verification
+---
 
-Fault-injection scenarios include:
+## Runtime Failure Verification
 
-- HTTP response loss after a successful commit, followed by idempotent retry.
-- Connection pool exhaustion and recovery.
-- Worker termination before and after transaction commit.
-- Real PostgreSQL deadlock recovery using SQLSTATE `40P01`.
-- Verification of canonical records, entries, event history, idempotency receipts, and provider checkpoints.
+Fault-injection exercises include:
 
-Worker-process failures are exercised directly.
+- Simulated HTTP response loss after successful database commit
+- Idempotent retry following an ambiguous response outcome
+- Connection-pool exhaustion and recovery
+- Worker termination before and after transaction commit
+- PostgreSQL deadlock recovery using SQLSTATE `40P01`
+- Verification of canonical records, historical entries, receipts, and provider checkpoints after failure
 
-PostgreSQL server crashes, host failures, and actual network or proxy disconnects are not covered by the reported fault-injection tests.
+Worker-process failure scenarios are exercised directly.
 
-### Schema Evolution Verification
+The reported tests do not establish equivalent behavior for actual PostgreSQL server crashes, infrastructure outages, or real network and reverse-proxy disconnects.
 
-Migration tests use uniquely named disposable PostgreSQL databases.
+---
 
-They verify that:
+## Async Execution Verification
 
-- Injected failure after Task 3 schema changes and history backfill results in transactional rollback.
-- Readiness rejects an incompatible Alembic revision.
-- Legacy income and expense transactions retain their essential business meaning after migration into canonical financial state.
+The application's primary financial services use synchronous SQLAlchemy.
 
-### Async SQLAlchemy Bridge Verification
+Separate experiments investigate whether selected correctness contracts remain valid under different asynchronous execution models.
 
-Five isolated PostgreSQL-backed tests examine execution through SQLAlchemy `AsyncSession`.
+### SQLAlchemy AsyncSession Bridge
 
-They cover:
+Five isolated PostgreSQL-backed tests evaluate execution through `AsyncSession.run_sync()`.
 
-- Cancellation before commit.
-- Simulated acknowledgment loss after commit and idempotent replay.
-- Competing guarded writes with observed PostgreSQL lock contention.
-- Connection pool exhaustion and recovery.
-- Independent async session ownership and transaction isolation.
+The scenarios cover:
 
-**Scope:** These tests use `AsyncSession.run_sync()` to invoke existing synchronous application services.
+- Cancellation before commit
+- Simulated response loss after commit
+- Conflicting guarded writes
+- Connection-pool exhaustion and recovery
+- Independent session ownership and transaction isolation
 
-They verify selected async-driver and transaction-lifecycle behavior, not a native-async application rewrite.
+These tests verify selected async-driver and transaction-lifecycle behavior.
 
-### Native Async Runtime Failure Verification
+They do not constitute a native-async rewrite of the application.
 
-Five additional PostgreSQL-backed tests exercise a **test-only native-async financial correction implementation** using `async def`, `await`, and SQLAlchemy `AsyncSession` without `run_sync()` for the financial operation.
+### Native-Async Financial Operations
 
-The experiment evaluates whether financial correctness contracts remain valid under an asynchronous execution model.
+Five additional PostgreSQL-backed tests exercise a **test-only native-async financial correction implementation** using `async def`, `await`, and SQLAlchemy `AsyncSession`.
 
-**Verified scenarios include:**
+The tested scenarios include:
 
-**1. Financial correction and idempotency**
+1. Correct financial state transitions and idempotent replay
+2. Cancellation before commit and rollback verification
+3. Simulated post-commit acknowledgment loss
+4. Concurrent guarded writes with PostgreSQL lock contention
+5. Connection-pool exhaustion and recovery
 
-- Correct financial state transitions.
-- Canonical event and legacy transaction consistency.
-- Idempotent command replay.
-- Conflicting reuse of an idempotency key.
+**Result:** 5/5 native-async experimental tests passed.
 
-**2. Cancellation before commit**
+These tests are separate from the reported 208-test production suite.
 
-- Controlled cancellation after transactional writes but before commit.
-- Rollback of uncommitted financial changes.
-- Verification of persisted state through an independent database observer.
-- Session and connection cleanup.
+The native-async implementation is experimental and is not the application's production correction endpoint.
 
-**3. Simulated post-commit acknowledgment loss**
+### ASGI Middleware Behavior
 
-- Successful database commit followed by an injected response failure.
-- Idempotent replay of the already committed result.
-- Prevention of duplicate financial effects.
+Additional tests exercise actual ASGI middleware execution with controlled asynchronous coroutines.
 
-**4. Concurrent guarded writes**
+They verify:
 
-- Competing corrections against the same expected event version.
-- Actual PostgreSQL lock contention.
-- One successful writer and rejection of a stale competing operation.
-- Preservation of canonical financial history.
+- Cancellation propagation
+- Request-context cleanup
+- Request-ID `ContextVar` reset
+- Concurrent request-context isolation
+- Expected process-local request metrics
 
-**5. Connection pool exhaustion and recovery**
+These tests do not establish behavior for every real client disconnect or cancellation of synchronous database operations.
 
-- Controlled async connection-pool exhaustion.
-- Timeout behavior under resource contention.
-- Subsequent recovery and successful connection acquisition.
+---
 
-**Result: 5/5 native-async tests passed.**
+## Operational Verification
 
-These tests use disposable PostgreSQL databases migrated to the current schema revision.
+Additional exercises cover:
 
-**Scope and limitations:**
+- PostgreSQL backup and restore
+- Projection deletion and rebuilding
+- Canonical-state auditing after recovery
+- Deployment preflight validation
+- Uvicorn process smoke testing
+- Liveness and readiness endpoints
+- Graceful shutdown through SIGTERM
+- Detection of incompatible database revisions
 
-- The native-async financial operation is an isolated test implementation, not the production correction endpoint.
-- The production financial services remain primarily synchronous.
-- The experiment verifies selected financial contracts under native-async execution.
-- Simulated post-commit acknowledgment loss does not establish correctness for every ambiguous network or database-commit failure.
-- These results do not represent a completed application-wide native-async migration.
+Operational verification focuses on making tested failure outcomes observable and recoverable.
 
-### Python Async Middleware Verification
-
-Two tests exercise the application's actual ASGI observability middleware.
-
-**Cancellation and request-context cleanup**
-
-A test cancels an in-flight middleware invocation at a controlled await boundary.
-
-It verifies that cancellation propagates, cleanup executes, and the request-ID `ContextVar` is reset.
-
-Context cleanup is checked inside the same task, preventing a false positive caused by creating a fresh task with an empty context.
-
-**Concurrent request-context isolation**
-
-Two middleware invocations execute concurrently with separate request IDs.
-
-Deterministic synchronization gates ensure their execution overlaps.
-
-The tests verify that:
-
-- Each request preserves its own correlation ID.
-- Responses contain the appropriate request IDs.
-- Request context does not leak between tasks.
-- Process-local request metrics record the expected increment.
-
-These tests cover actual middleware execution with controlled downstream coroutines.
-
-They do not establish behavior for real client disconnects through a live ASGI server or cancellation of synchronous database operations.
-
-### Operational Verification
-
-Additional verification exercises include:
-
-- Real PostgreSQL backup and restore.
-- Projection deletion and rebuild.
-- Canonical-state audit after recovery.
-- Deployment preflight validation.
-- Uvicorn process smoke testing.
-- Liveness and readiness checks.
-- SIGTERM shutdown testing.
-
-Passing tests provide evidence for the scenarios exercised, not a mathematical proof of correctness across every possible execution or failure mode.
+The project has not undergone production traffic, availability, or incident-response validation.
 
 ---
 
@@ -301,85 +433,134 @@ Passing tests provide evidence for the scenarios exercised, not a mathematical p
 | Layer | Technology |
 |---|---|
 | Language | Python |
-| API | FastAPI, Pydantic |
+| API framework | FastAPI |
+| Validation | Pydantic |
 | Database | PostgreSQL |
 | ORM | SQLAlchemy |
 | Schema migrations | Alembic |
 | Authentication | JWT |
 | Testing | pytest |
-| Async verification | asyncio, SQLAlchemy AsyncSession, asyncpg |
-| Runtime | Uvicorn |
-| Continuous integration | GitHub Actions |
+| Async verification | asyncio, AsyncSession, asyncpg |
+| Application server | Uvicorn |
+| CI configuration | GitHub Actions |
 
-The application primarily uses synchronous SQLAlchemy services.
-
-Async database behavior is evaluated through isolated bridge and native-async experiments, while native asyncio behavior is also tested in the application's HTTP middleware.
+The application primarily uses synchronous financial services. Native-async financial behavior is evaluated separately through isolated experiments.
 
 ---
 
 ## Running Locally
 
-From the `backend` directory, configure PostgreSQL through `DATABASE_URL`.
+### Prerequisites
 
-**Install dependencies:**
+- Python and pip
+- PostgreSQL
+- A dedicated development database
+- A separate disposable database for testing
+
+Some tests require PostgreSQL database-creation privileges or additional privileges for fault-injection scenarios.
+
+### Install Dependencies
+
+From the `backend` directory:
 
 ```bash
 pip install -r requirements.txt
 pip install -r requirements-test.txt
 ```
 
-**Apply database migrations:**
+### Configure PostgreSQL
+
+Set `DATABASE_URL` to a PostgreSQL database intended for the current operation.
+
+For example:
+
+```bash
+export DATABASE_URL="postgresql://USER:PASSWORD@localhost:5432/finance_dev_db"
+```
+
+Use a separate, disposable database for tests.
+
+### Apply Migrations
 
 ```bash
 alembic upgrade head
 ```
 
-**Run the test suite using a dedicated PostgreSQL test database:**
+Migrations targeting the protected `finance_db` database require explicit authorization as documented in `backend/DEPLOYMENT_V1.md`.
+
+Do not bypass database-safety checks when preparing a test environment.
+
+### Run Tests
+
+Use an isolated PostgreSQL test database:
 
 ```bash
-DATABASE_URL=postgresql://USER:PASSWORD@localhost:5432/finance_test_db pytest -q
+export DATABASE_URL="postgresql://USER:PASSWORD@localhost:5432/finance_test_db"
+
+pytest -q
 ```
 
-Some tests create disposable PostgreSQL databases and require database-creation privileges.
+The default test command may include experimental suites with additional environmental requirements. The reported 208-test production-suite result excludes the explicitly experimental research files.
 
-Certain fault-injection tests require elevated PostgreSQL privileges.
+**Warning:** Tests may create, modify, or destroy data. Never point the test runner at a database containing important records.
 
-**Start the API:**
+### Start the API
 
 ```bash
 uvicorn app.main:app --reload
 ```
 
-Do not run destructive tests against databases containing important data.
-
 ---
 
 ## Engineering Principles
 
-- Preserve business meaning across state transitions.
-- Prevent invalid commits rather than relying exclusively on later detection.
-- Keep external evidence separate from accepted financial state.
-- Make uncertainty and conflicting observations explicit.
-- Keep derived data rebuildable from trusted records.
-- Verify behavior at transaction, concurrency, execution, and failure boundaries.
-- Preserve business correctness contracts when evaluating alternative execution models.
-- Prefer concrete requirements and observed failures over speculative complexity.
-- Investigate the first divergence between expected and actual system state.
+This project is guided by the following principles:
+
+**Preserve business meaning.** Financial state transitions must respect explicit domain relationships and invariants.
+
+**Define transaction boundaries.** Atomic operations do not automatically guarantee correctness across concurrent transactions.
+
+**Treat retries as normal execution.** A committed financial command must not be applied again because its original response was lost.
+
+**Verify database behavior on a real database.** Mocked dependencies cannot reproduce every locking, isolation, commit, or rollback behavior.
+
+**Separate observations from authority.** External evidence, canonical records, historical evidence, and derived projections have different responsibilities.
+
+**Prefer prevention over retrospective detection.** Known invalid financial states should be rejected before commit whenever the system can enforce the required invariant.
+
+**Make recovery testable.** Critical financial state should be auditable, and derived views should be reconstructable.
+
+**State the limits of evidence.** A passing test establishes behavior under tested conditions, not correctness across every possible execution path.
+
+**Control the cost of complexity.** Introduce mechanisms in response to explicit correctness requirements and demonstrated failure boundaries.
 
 ---
 
-## Project Scope
+## Scope and Limitations
 
-Personal Finance Platform is a **backend engineering case study**, not a production-deployed financial product.
+Personal Finance Platform is an engineering case study, not a production-deployed financial product.
 
-Its scope is deliberately focused on correctness mechanisms, real PostgreSQL behavior, controlled failure experiments, and reproducible verification.
+The current work does not establish:
 
-The project does not claim exhaustive production validation, a fully native-async application, comprehensive distributed infrastructure, or complete coverage of all possible security and runtime failure modes.
+- Exhaustive coverage of concurrent transaction interleavings
+- Correctness under every PostgreSQL isolation level
+- Complete resilience against infrastructure or network outages
+- Zero-downtime schema migration compatibility
+- A fully native-async production application
+- A distributed financial event-processing platform
+- Complete OAuth2/OIDC or organization-wide authorization infrastructure
+- Production-grade performance, availability, or operational readiness
+
+Some guarantees also depend on application write paths following shared locking and transaction conventions. Direct database writes or future code paths that bypass those conventions require separate verification.
+
+The public repository emphasizes implemented behavior, reproducible tests, documented engineering decisions, and explicit limitations.
 
 ## Portfolio Note
 
-The repository serves as a technical showcase of implemented backend behavior and its verification evidence.
+This repository is intended to demonstrate backend engineering through **concrete failure scenarios and verifiable correctness mechanisms**, rather than claims of production scale.
 
-Some architecture decision records and exploratory research notes are maintained separately.
+The primary emphasis is the relationship between:
 
-The public documentation focuses on observable engineering properties, reproducible tests, and clearly stated limitations.
+**Business Requirements → Invariants → Failure Boundaries → Implementation → Verification Evidence**
+
+The central engineering objective is not to eliminate all uncertainty, but to establish which correctness properties have been tested, under which conditions, and where additional evidence is still required.
