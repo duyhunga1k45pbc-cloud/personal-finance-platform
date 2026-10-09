@@ -649,7 +649,7 @@ async def test_concurrent_async_sessions_preserve_expected_version_guard(
                 )
             ).mappings().all()
             history = (
-                await verification_session.scalars(
+                await verification_session.execute(
                     text(
                         """
                         SELECT event_version
