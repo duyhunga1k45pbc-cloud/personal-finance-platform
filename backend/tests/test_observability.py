@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from decimal import Decimal
@@ -7,9 +8,11 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.requests import Request
+from starlette.responses import Response
 
 from app.database import Base, SessionLocal, engine
-from app.main import app
+from app.main import app, observe_request
 from app.models import FinancialAccount
 from app.observability import (
     JsonFormatter,
@@ -64,6 +67,29 @@ def client():
     return TestClient(app)
 
 
+@pytest.fixture
+def anyio_backend():
+    return "asyncio"
+
+
+def _request_with_id(request_id: str) -> Request:
+    return Request(
+        {
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "method": "GET",
+            "scheme": "http",
+            "path": "/runtime-test",
+            "raw_path": b"/runtime-test",
+            "query_string": b"",
+            "headers": [(b"x-request-id", request_id.encode("ascii"))],
+            "client": ("testclient", 12345),
+            "server": ("testserver", 80),
+        }
+    )
+
+
 def _register_and_login(client: TestClient, prefix: str = "obs"):
     email = f"{prefix}-{uuid4().hex}@example.com"
     password = "testpassword123"
@@ -108,6 +134,124 @@ def test_safe_request_id_is_preserved_and_invalid_value_is_replaced(client):
     rejected = client.get("/", headers={"X-Request-ID": "bad request id"})
     assert rejected.headers["x-request-id"] != "bad request id"
     assert rejected.headers["x-request-id"]
+
+
+@pytest.mark.anyio
+async def test_observe_request_cancellation_resets_context_in_same_task():
+    first_request_id = "cancelled-runtime-request"
+    second_request_id = "after-cancel-runtime-request"
+    downstream_entered = asyncio.Event()
+    never_release = asyncio.Event()
+    observed_contexts = []
+
+    async def downstream(request):
+        request_id = request.headers["x-request-id"]
+        observed_contexts.append((request_id, current_request_id()))
+        if request_id == first_request_id:
+            downstream_entered.set()
+            await never_release.wait()
+        return Response(content="ok")
+
+    async def cancel_then_run_followup():
+        cancellation_propagated = False
+        context_after_cancellation = "not-checked"
+        try:
+            await observe_request(
+                _request_with_id(first_request_id),
+                downstream,
+            )
+        except asyncio.CancelledError:
+            cancellation_propagated = True
+            context_after_cancellation = current_request_id()
+
+        response = await observe_request(
+            _request_with_id(second_request_id),
+            downstream,
+        )
+        return (
+            cancellation_propagated,
+            context_after_cancellation,
+            current_request_id(),
+            response,
+        )
+
+    task = asyncio.create_task(cancel_then_run_followup())
+    try:
+        await asyncio.wait_for(downstream_entered.wait(), timeout=3)
+        task.cancel()
+        (
+            cancellation_propagated,
+            context_after_cancellation,
+            context_after_followup,
+            response,
+        ) = await asyncio.wait_for(task, timeout=3)
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    assert cancellation_propagated is True
+    assert context_after_cancellation is None
+    assert context_after_followup is None
+    assert observed_contexts == [
+        (first_request_id, first_request_id),
+        (second_request_id, second_request_id),
+    ]
+    assert response.headers["X-Request-ID"] == second_request_id
+
+
+@pytest.mark.anyio
+async def test_overlapping_observe_requests_keep_contexts_and_metrics_isolated():
+    request_ids = ("overlap-runtime-request-a", "overlap-runtime-request-b")
+    both_downstream_entered = asyncio.Event()
+    release_downstreams = asyncio.Event()
+    observed_contexts = {}
+    metrics_before = runtime_metrics.snapshot()["counters"].get(
+        "http_requests_total",
+        0,
+    )
+
+    async def downstream(request):
+        request_id = request.headers["x-request-id"]
+        observed_contexts[request_id] = current_request_id()
+        if len(observed_contexts) == len(request_ids):
+            both_downstream_entered.set()
+        await release_downstreams.wait()
+        return Response(content="ok")
+
+    tasks = [
+        asyncio.create_task(
+            observe_request(_request_with_id(request_id), downstream)
+        )
+        for request_id in request_ids
+    ]
+    try:
+        await asyncio.wait_for(both_downstream_entered.wait(), timeout=3)
+        assert observed_contexts == {
+            request_id: request_id for request_id in request_ids
+        }
+        assert current_request_id() is None
+        release_downstreams.set()
+        responses = await asyncio.wait_for(
+            asyncio.gather(*tasks),
+            timeout=3,
+        )
+    finally:
+        release_downstreams.set()
+        if any(not task.done() for task in tasks):
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    assert {
+        response.headers["X-Request-ID"] for response in responses
+    } == set(request_ids)
+    assert current_request_id() is None
+    assert (
+        runtime_metrics.snapshot()["counters"]["http_requests_total"]
+        == metrics_before + 2
+    )
 
 
 def test_json_logs_include_request_id_and_redact_sensitive_fields():
