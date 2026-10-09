@@ -131,8 +131,14 @@ def commit_with_idempotency_race_recovery(
     try:
         db.commit()
         return None
-    except IntegrityError:
+    except IntegrityError as error:
         db.rollback()
+        diagnostics = getattr(error.orig, "diag", None)
+        if (
+            getattr(diagnostics, "constraint_name", None)
+            != "uq_command_receipts_user_command_key"
+        ):
+            raise
         existing = get_stored_command_response(
             db,
             user_id=user_id,

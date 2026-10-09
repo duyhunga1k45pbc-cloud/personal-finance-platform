@@ -253,9 +253,19 @@ def test_tampered_jwt_signature_and_payload_are_rejected(client):
     user_id, token = _register_and_login(client)
     header_segment, payload_segment, signature_segment = token.split(".")
 
-    replacement = "A" if signature_segment[-1] != "A" else "B"
+    signature_padding = "=" * (-len(signature_segment) % 4)
+    signature_bytes = bytearray(
+        base64.urlsafe_b64decode(signature_segment + signature_padding)
+    )
+    signature_bytes[0] ^= 1
+    assert bytes(signature_bytes) != base64.urlsafe_b64decode(
+        signature_segment + signature_padding
+    )
+    tampered_signature_segment = (
+        base64.urlsafe_b64encode(signature_bytes).rstrip(b"=").decode()
+    )
     tampered_signature = ".".join(
-        (header_segment, payload_segment, signature_segment[:-1] + replacement)
+        (header_segment, payload_segment, tampered_signature_segment)
     )
 
     padding = "=" * (-len(payload_segment) % 4)
