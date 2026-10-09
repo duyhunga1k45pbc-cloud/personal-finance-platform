@@ -214,7 +214,7 @@ class FinancialEventLink(Base):
         ),
     )
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     from_event_id = Column(
         Integer,
         ForeignKey("financial_events.id"),
@@ -331,7 +331,7 @@ class ReconciliationCase(Base):
         ),
     )
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     account_id = Column(
         Integer,
@@ -393,7 +393,7 @@ class ReconciliationHistory(Base):
         ),
     )
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     reconciliation_id = Column(
         Integer,
         ForeignKey("reconciliation_cases.id"),
@@ -426,7 +426,7 @@ class ProviderConnection(Base):
         ),
     )
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     provider_name = Column(String(100), nullable=False)
     external_account_id = Column(String(255), nullable=False)
@@ -448,7 +448,7 @@ class ExternalTransaction(Base):
         ),
     )
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     provider_connection_id = Column(
         Integer,
@@ -480,7 +480,7 @@ class ExternalTransactionEvidence(Base):
         ),
     )
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     provider_connection_id = Column(
         Integer,
@@ -513,7 +513,7 @@ class ProviderNormalizedCandidate(Base):
         UniqueConstraint("source_evidence_id", "normalizer_version", name="uq_provider_normalized_candidate_evidence_version"),
     )
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     provider_connection_id = Column(Integer, ForeignKey("provider_connections.id"), nullable=False, index=True)
     external_transaction_record_id = Column(Integer, ForeignKey("external_transactions.id"), nullable=False, index=True)
@@ -550,14 +550,14 @@ class ProviderTransactionInterpretation(Base):
         UniqueConstraint("canonical_event_id", name="uq_provider_interpretations_canonical_event"),
     )
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    external_transaction_record_id = Column(Integer, ForeignKey("external_transactions.id"), nullable=False, index=True)
+    external_transaction_record_id = Column(Integer, ForeignKey("external_transactions.id"), nullable=False)
     normalized_candidate_id = Column(Integer, ForeignKey("provider_normalized_candidates.id"), nullable=False, index=True)
     state = Column(String(32), nullable=False)
     event_type = Column(String(32), nullable=True)
     account_id = Column(Integer, ForeignKey("financial_accounts.id"), nullable=True, index=True)
-    canonical_event_id = Column(Integer, ForeignKey("financial_events.id"), nullable=True, index=True)
+    canonical_event_id = Column(Integer, ForeignKey("financial_events.id"), nullable=True)
     confidence = Column(String(32), nullable=True)
     version = Column(Integer, nullable=False, default=1)
     created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc))
@@ -573,7 +573,7 @@ class ProviderInterpretationHistory(Base):
         UniqueConstraint("interpretation_id", "interpretation_version", name="uq_provider_interpretation_history_version"),
     )
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     interpretation_id = Column(Integer, ForeignKey("provider_transaction_interpretations.id"), nullable=False, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     interpretation_version = Column(Integer, nullable=False)
@@ -617,7 +617,7 @@ class ProviderTransactionLifecycle(Base):
         ),
     )
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     external_transaction_record_id = Column(
         Integer,
@@ -688,7 +688,7 @@ class ProviderTransactionLifecycleHistory(Base):
         ),
     )
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     lifecycle_id = Column(
         Integer,
         ForeignKey("provider_transaction_lifecycles.id"),
@@ -726,7 +726,7 @@ class ProviderSyncCheckpoint(Base):
         ),
     )
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     provider_connection_id = Column(
         Integer,
@@ -779,7 +779,7 @@ class ProviderSyncPage(Base):
         ),
     )
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     provider_connection_id = Column(
         Integer,
@@ -818,7 +818,7 @@ class ProviderSyncPageEvidence(Base):
         ),
     )
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     sync_page_id = Column(
         Integer,
         ForeignKey("provider_sync_pages.id"),
@@ -948,7 +948,7 @@ class FinancialProjectionState(Base):
         ),
     )
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     generation = Column(Integer, nullable=False, default=1)
     canonical_fingerprint = Column(String(64), nullable=False)
@@ -983,7 +983,7 @@ class FinancialAccountBalanceProjection(Base):
         ),
     )
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     account_id = Column(
         Integer,
