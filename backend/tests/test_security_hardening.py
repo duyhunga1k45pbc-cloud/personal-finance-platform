@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import base64
+import json
 from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
 from jose import jwt
+from sqlalchemy.orm import Session
 
 from app.auth import (
     ALGORITHM,
@@ -12,8 +16,16 @@ from app.auth import (
     JWT_ISSUER,
     SECRET_KEY,
 )
-from app.database import Base, engine
+from app.database import Base, SessionLocal, engine
 from app.main import app
+from app.models import (
+    CommandReceipt,
+    FinancialEvent,
+    FinancialEventEntry,
+    FinancialEventHistory,
+    Transaction,
+    User,
+)
 from app.security import SecurityConfigurationError, validate_security_values
 
 pytestmark = pytest.mark.security
@@ -91,6 +103,34 @@ def _manual_token(*, subject: str, **overrides):
     }
     claims.update(overrides)
     return jwt.encode(claims, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def _authorization(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _command_headers(token: str) -> dict[str, str]:
+    return {
+        **_authorization(token),
+        "Idempotency-Key": uuid4().hex,
+    }
+
+
+def _transaction_payload(
+    *,
+    amount: str = "125000.00",
+    description: str = "security isolation",
+    account_id: int | None = None,
+) -> dict:
+    payload = {
+        "amount": amount,
+        "description": description,
+        "category": "test",
+        "type": "expense",
+    }
+    if account_id is not None:
+        payload["account_id"] = account_id
+    return payload
 
 
 def test_production_rejects_missing_placeholder_and_short_secrets():
@@ -209,6 +249,33 @@ def test_expired_token_is_rejected(client):
     )
 
 
+def test_tampered_jwt_signature_and_payload_are_rejected(client):
+    user_id, token = _register_and_login(client)
+    header_segment, payload_segment, signature_segment = token.split(".")
+
+    replacement = "A" if signature_segment[-1] != "A" else "B"
+    tampered_signature = ".".join(
+        (header_segment, payload_segment, signature_segment[:-1] + replacement)
+    )
+
+    padding = "=" * (-len(payload_segment) % 4)
+    payload = json.loads(
+        base64.urlsafe_b64decode(payload_segment + padding)
+    )
+    payload["sub"] = str(user_id + 999999)
+    encoded_payload = base64.urlsafe_b64encode(
+        json.dumps(payload, separators=(",", ":")).encode()
+    ).rstrip(b"=").decode()
+    tampered_payload = ".".join(
+        (header_segment, encoded_payload, signature_segment)
+    )
+
+    for altered_token in (tampered_signature, tampered_payload):
+        _assert_unauthorized(
+            client.get("/auth/me", headers=_authorization(altered_token))
+        )
+
+
 def test_token_for_nonexistent_principal_is_401_not_404(client):
     user_id, _ = _register_and_login(client)
     nonexistent = _manual_token(subject=str(user_id + 999999))
@@ -218,6 +285,178 @@ def test_token_for_nonexistent_principal_is_401_not_404(client):
         headers={"Authorization": f"Bearer {nonexistent}"},
     )
     _assert_unauthorized(response)
+
+
+def test_token_for_deleted_principal_is_401(client):
+    db: Session = SessionLocal()
+    user = User(
+        email=f"deleted_{uuid4().hex}@example.com",
+        hashed_password="unused-security-test-hash",
+    )
+    try:
+        db.add(user)
+        db.commit()
+        user_id = user.id
+        token = _manual_token(subject=str(user_id))
+
+        db.delete(user)
+        db.commit()
+    finally:
+        db.close()
+
+    _assert_unauthorized(
+        client.get("/auth/me", headers=_authorization(token))
+    )
+
+
+def test_cross_user_transaction_reads_are_hidden(client):
+    owner_id, owner_token = _register_and_login(
+        client, email="transaction-owner@example.com"
+    )
+    _, other_token = _register_and_login(
+        client, email="transaction-reader@example.com"
+    )
+    created = client.post(
+        "/transactions",
+        json=_transaction_payload(),
+        headers=_command_headers(owner_token),
+    )
+    assert created.status_code == 200, created.text
+    transaction_id = created.json()["id"]
+
+    listed = client.get(
+        "/transactions",
+        headers=_authorization(other_token),
+    )
+    assert listed.status_code == 200, listed.text
+    assert listed.json()["total"] == 0
+    assert listed.json()["data"] == []
+
+    for path in (
+        f"/transactions/{transaction_id}",
+        f"/transactions/{transaction_id}/history",
+    ):
+        response = client.get(path, headers=_authorization(other_token))
+        assert response.status_code == 404, response.text
+
+    db: Session = SessionLocal()
+    try:
+        stored = db.query(Transaction).filter(Transaction.id == transaction_id).one()
+        assert stored.user_id == owner_id
+    finally:
+        db.close()
+
+
+def test_cross_user_transaction_writes_have_no_side_effects(client):
+    owner_id, owner_token = _register_and_login(
+        client, email="write-owner@example.com"
+    )
+    attacker_id, attacker_token = _register_and_login(
+        client, email="write-attacker@example.com"
+    )
+
+    owner_account = client.post(
+        "/accounts",
+        json={
+            "name": "Private account",
+            "account_type": "BANK",
+            "currency": "VND",
+        },
+        headers=_authorization(owner_token),
+    )
+    assert owner_account.status_code == 200, owner_account.text
+    account_id = owner_account.json()["id"]
+    owner_transaction = client.post(
+        "/transactions",
+        json=_transaction_payload(account_id=account_id),
+        headers=_command_headers(owner_token),
+    )
+    assert owner_transaction.status_code == 200, owner_transaction.text
+    transaction_id = owner_transaction.json()["id"]
+    event_id = owner_transaction.json()["canonical_event_id"]
+
+    rejected_create = client.post(
+        "/transactions",
+        json=_transaction_payload(
+            amount="999999.00",
+            description="unauthorized create",
+            account_id=account_id,
+        ),
+        headers=_command_headers(attacker_token),
+    )
+    assert rejected_create.status_code == 404, rejected_create.text
+
+    update_headers = _command_headers(attacker_token)
+    update_headers["X-Expected-Version"] = str(
+        owner_transaction.json()["canonical_version"]
+    )
+    rejected_update = client.put(
+        f"/transactions/{transaction_id}",
+        json=_transaction_payload(
+            amount="777777.00",
+            description="unauthorized update",
+            account_id=account_id,
+        ),
+        headers=update_headers,
+    )
+    assert rejected_update.status_code == 404, rejected_update.text
+
+    delete_headers = _command_headers(attacker_token)
+    delete_headers["X-Expected-Version"] = str(
+        owner_transaction.json()["canonical_version"]
+    )
+    rejected_delete = client.delete(
+        f"/transactions/{transaction_id}",
+        headers=delete_headers,
+    )
+    assert rejected_delete.status_code == 404, rejected_delete.text
+
+    db: Session = SessionLocal()
+    try:
+        stored_transaction = (
+            db.query(Transaction).filter(Transaction.id == transaction_id).one()
+        )
+        stored_event = db.query(FinancialEvent).filter(FinancialEvent.id == event_id).one()
+        history = (
+            db.query(FinancialEventHistory)
+            .filter(FinancialEventHistory.financial_event_id == event_id)
+            .all()
+        )
+        entries = (
+            db.query(FinancialEventEntry)
+            .filter(FinancialEventEntry.financial_event_id == event_id)
+            .all()
+        )
+        attacker_receipts = (
+            db.query(CommandReceipt)
+            .filter(CommandReceipt.user_id == attacker_id)
+            .count()
+        )
+        attacker_transactions = (
+            db.query(Transaction)
+            .filter(Transaction.user_id == attacker_id)
+            .count()
+        )
+        attacker_events = (
+            db.query(FinancialEvent)
+            .filter(FinancialEvent.user_id == attacker_id)
+            .count()
+        )
+
+        assert stored_transaction.user_id == owner_id
+        assert stored_transaction.amount == 125000
+        assert stored_transaction.description == "security isolation"
+        assert stored_event.user_id == owner_id
+        assert stored_event.lifecycle_state == "ACTIVE"
+        assert stored_event.version == 1
+        assert len(history) == 1
+        assert history[0].transition_type == "CREATED"
+        assert len(entries) == 1
+        assert attacker_receipts == 0
+        assert attacker_transactions == 0
+        assert attacker_events == 0
+    finally:
+        db.close()
 
 
 def test_sql_injection_shaped_login_does_not_bypass_auth(client):
