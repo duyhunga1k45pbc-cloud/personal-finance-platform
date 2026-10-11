@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Header, HTTPException
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.command_service import (
@@ -261,22 +262,45 @@ def list_external_transactions(
     if connection is None:
         raise HTTPException(status_code=404, detail="Provider connection not found")
 
+    evidence_counts = (
+        db.query(
+            ExternalTransactionEvidence.external_transaction_record_id.label(
+                "transaction_record_id"
+            ),
+            func.count(ExternalTransactionEvidence.id).label("evidence_count"),
+        )
+        .join(
+            ExternalTransaction,
+            ExternalTransaction.id
+            == ExternalTransactionEvidence.external_transaction_record_id,
+        )
+        .filter(ExternalTransaction.provider_connection_id == connection.id)
+        .group_by(ExternalTransactionEvidence.external_transaction_record_id)
+        .subquery()
+    )
     rows = (
         db.query(ExternalTransaction)
+        .add_columns(
+            func.coalesce(evidence_counts.c.evidence_count, 0).label(
+                "evidence_count"
+            )
+        )
+        .outerjoin(
+            evidence_counts,
+            evidence_counts.c.transaction_record_id == ExternalTransaction.id,
+        )
         .filter(ExternalTransaction.provider_connection_id == connection.id)
         .order_by(ExternalTransaction.id.asc())
         .all()
     )
     return [
         {
-            "id": row.id,
-            "external_transaction_id": row.external_transaction_id,
-            "first_observed_at": row.first_observed_at,
-            "evidence_count": db.query(ExternalTransactionEvidence).filter(
-                ExternalTransactionEvidence.external_transaction_record_id == row.id
-            ).count(),
+            "id": transaction.id,
+            "external_transaction_id": transaction.external_transaction_id,
+            "first_observed_at": transaction.first_observed_at,
+            "evidence_count": evidence_count,
         }
-        for row in rows
+        for transaction, evidence_count in rows
     ]
 
 

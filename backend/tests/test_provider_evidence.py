@@ -1,7 +1,9 @@
+import datetime
 from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import event
 from sqlalchemy.exc import DBAPIError
 
 from app.canonical_audit import audit_user, find_first_provider_evidence_divergence
@@ -230,6 +232,104 @@ def test_provider_connection_and_evidence_are_user_scoped():
 
     blocked_ingest = ingest(other_headers, connection["id"], external_id="attack")
     assert blocked_ingest.status_code == 404
+
+
+def test_external_transaction_listing_counts_all_evidence_and_preserves_order():
+    user_id, headers = create_user()
+    connection = create_connection(headers).json()
+
+    no_evidence = ExternalTransaction(
+        user_id=user_id,
+        provider_connection_id=connection["id"],
+        external_transaction_id="txn-no-evidence",
+        first_observed_at=datetime.datetime(2026, 9, 1, tzinfo=datetime.timezone.utc),
+    )
+    db = SessionLocal()
+    try:
+        db.add(no_evidence)
+        db.commit()
+        no_evidence_id = no_evidence.id
+    finally:
+        db.close()
+
+    single = ingest(
+        headers,
+        connection["id"],
+        external_id="txn-one-evidence",
+        observed_at="2026-09-03T00:00:00Z",
+    )
+    multiple_first = ingest(
+        headers,
+        connection["id"],
+        external_id="txn-multiple-evidence",
+        observed_at="2026-09-03T00:00:00Z",
+        raw_payload={"id": "txn-multiple-evidence", "status": "pending"},
+    )
+    multiple_second = ingest(
+        headers,
+        connection["id"],
+        external_id="txn-multiple-evidence",
+        observed_at="2026-09-03T01:00:00Z",
+        raw_payload={"id": "txn-multiple-evidence", "status": "posted"},
+    )
+    assert single.status_code == 200
+    assert multiple_first.status_code == 200
+    assert multiple_second.status_code == 200
+
+    statements = []
+
+    def capture_statement(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", capture_statement)
+    try:
+        response = client.get(
+            f"/provider-connections/{connection['id']}/external-transactions",
+            headers=headers,
+        )
+    finally:
+        event.remove(engine, "before_cursor_execute", capture_statement)
+
+    assert response.status_code == 200
+    rows = response.json()
+    assert [row["id"] for row in rows] == sorted(row["id"] for row in rows)
+    assert [row["id"] for row in rows] == [
+        no_evidence_id,
+        single.json()["external_transaction_record_id"],
+        multiple_first.json()["external_transaction_record_id"],
+    ]
+    assert all(
+        set(row) == {
+            "id",
+            "external_transaction_id",
+            "first_observed_at",
+            "evidence_count",
+        }
+        for row in rows
+    )
+    assert [row["evidence_count"] for row in rows] == [0, 1, 2]
+    assert all(row["first_observed_at"] for row in rows)
+    assert len(statements) == 3
+
+
+def test_external_transaction_listing_hides_foreign_provider_connection():
+    _, owner_headers = create_user("listing-owner")
+    _, other_headers = create_user("listing-other")
+    connection = create_connection(owner_headers).json()
+    ingested = ingest(
+        owner_headers,
+        connection["id"],
+        external_id="private-listing-row",
+    )
+    assert ingested.status_code == 200
+
+    response = client.get(
+        f"/provider-connections/{connection['id']}/external-transactions",
+        headers=other_headers,
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Provider connection not found"
 
 
 def test_provider_audit_detects_owner_divergence_without_committing_corruption():
