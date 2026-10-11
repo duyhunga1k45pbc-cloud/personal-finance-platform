@@ -503,7 +503,7 @@ def test_security_headers_are_present_on_public_and_authenticated_responses(clie
         assert response.headers["referrer-policy"] == "no-referrer"
 
 
-def test_every_non_public_api_operation_declares_bearer_security():
+def test_every_non_public_api_operation_declares_authentication():
     schema = app.openapi()
     public = {
         ("get", "/"),
@@ -527,3 +527,17 @@ def test_every_non_public_api_operation_declares_bearer_security():
                 missing.append(key)
 
     assert missing == [], f"Protected API operations missing Bearer security: {missing}"
+
+    metrics_operation = schema["paths"]["/observability/metrics"]["get"]
+    metrics_security_names = {
+        name
+        for requirement in metrics_operation["security"]
+        for name in requirement
+    }
+    assert any(
+        schema["components"]["securitySchemes"][name].get("type") == "apiKey"
+        and schema["components"]["securitySchemes"][name].get("in") == "header"
+        and schema["components"]["securitySchemes"][name].get("name")
+        == "X-Metrics-Token"
+        for name in metrics_security_names
+    )

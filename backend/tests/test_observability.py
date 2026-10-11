@@ -68,6 +68,13 @@ def client():
 
 
 @pytest.fixture
+def metrics_headers(monkeypatch):
+    token = "test-only-monitoring-token"
+    monkeypatch.setenv("METRICS_ACCESS_TOKEN", token)
+    return {"X-Metrics-Token": token}
+
+
+@pytest.fixture
 def anyio_backend():
     return "asyncio"
 
@@ -322,12 +329,24 @@ def test_readiness_fails_closed_without_leaking_database_error(client, monkeypat
     assert "password" not in response.text.lower()
 
 
-def test_metrics_endpoint_is_authenticated_and_exposes_only_operational_counts(client):
+def test_metrics_endpoint_requires_monitoring_token_and_exposes_only_counts(
+    client,
+    metrics_headers,
+):
     unauthorized = client.get("/observability/metrics")
     assert unauthorized.status_code == 401
 
+    invalid_monitoring_token = client.get(
+        "/observability/metrics",
+        headers={"X-Metrics-Token": "invalid-test-token"},
+    )
+    assert invalid_monitoring_token.status_code == 401
+
     _, headers = _register_and_login(client, "metrics")
-    response = client.get("/observability/metrics", headers=headers)
+    user_access = client.get("/observability/metrics", headers=headers)
+    assert user_access.status_code == 401
+
+    response = client.get("/observability/metrics", headers=metrics_headers)
     assert response.status_code == 200
     body = response.json()
     assert "runtime" in body
@@ -338,7 +357,44 @@ def test_metrics_endpoint_is_authenticated_and_exposes_only_operational_counts(c
     assert "raw_payload" not in response.text
 
 
-def test_reconciliation_mismatch_emits_runtime_and_durable_signal(client):
+def test_metrics_endpoint_fails_closed_when_monitoring_token_is_unconfigured(
+    client,
+    monkeypatch,
+):
+    monkeypatch.delenv("METRICS_ACCESS_TOKEN", raising=False)
+
+    response = client.get("/observability/metrics")
+
+    assert response.status_code == 503
+
+
+def test_metrics_endpoint_denies_global_counts_to_independent_users(
+    client,
+    metrics_headers,
+):
+    first_user_id, first_headers = _register_and_login(client, "metrics-first")
+    second_user_id, second_headers = _register_and_login(client, "metrics-second")
+
+    first_response = client.get("/observability/metrics", headers=first_headers)
+    second_response = client.get("/observability/metrics", headers=second_headers)
+
+    assert first_response.status_code == 401
+    assert second_response.status_code == 401
+    assert first_user_id != second_user_id
+    assert client.get("/accounts", headers=first_headers).status_code == 200
+
+    monitoring_response = client.get(
+        "/observability/metrics",
+        headers=metrics_headers,
+    )
+    assert monitoring_response.status_code == 200
+    assert monitoring_response.json()["durable"]["users_total"] == 2
+
+
+def test_reconciliation_mismatch_emits_runtime_and_durable_signal(
+    client,
+    metrics_headers,
+):
     user_id, headers = _register_and_login(client, "recon")
     db = SessionLocal()
     try:
@@ -370,7 +426,7 @@ def test_reconciliation_mismatch_emits_runtime_and_durable_signal(client):
         == 1
     )
 
-    response = client.get("/observability/metrics", headers=headers)
+    response = client.get("/observability/metrics", headers=metrics_headers)
     assert response.status_code == 200
     assert response.json()["durable"]["open_reconciliation_mismatches"] == 1
 

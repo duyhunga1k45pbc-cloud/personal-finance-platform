@@ -56,7 +56,13 @@ It returns 503 when the process must not receive production traffic.
 
 ## Metrics
 
-`GET /observability/metrics` requires normal Bearer authentication in V1.
+`GET /observability/metrics` requires the dedicated `X-Metrics-Token` header.
+Configure `METRICS_ACCESS_TOKEN` as a high-entropy secret for the monitoring
+service. If it is not configured, the endpoint fails closed with 503; missing
+or invalid request tokens receive 401. User JWTs do not grant access. Keep the
+secret outside source control and rotate it through deployment configuration.
+This is a shared monitoring credential, not per-operator identity or role-based
+authorization.
 
 Runtime counters are process-local and reset on process restart. They are
 operational signals only and are never used to decide financial state.
