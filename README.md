@@ -10,7 +10,7 @@ Rather than optimizing for feature count, the project emphasizes understanding f
 
 **Project status:** Engineering portfolio and experimental application. Not production-deployed.
 
-**Quick navigation:** [Over-refund case study](#case-study-preventing-concurrent-over-refunds) · [Redis revision cache](#case-study-transaction-consistent-redis-caching) · [Short-lived auth sessions](#case-study-connection-pool-starvation) · [Moneta demo](#moneta-demo-ui) · [Verification](#verification-strategy)
+**Quick navigation:** [Over-refund case study](#case-study-preventing-concurrent-over-refunds) · [Redis revision cache](#case-study-transaction-consistent-redis-caching) · [Short-lived auth sessions](#case-study-connection-pool-starvation) · [Index & pagination](#case-study-deterministic-pagination-and-postgresql-indexing) · [Moneta demo](#moneta-demo-ui) · [Verification](#verification-strategy)
 
 ## Engineering Highlights
 
@@ -26,10 +26,11 @@ Rather than optimizing for feature count, the project emphasizes understanding f
 | Security | JWT authentication, declared route policies, SQL ownership scoping, short-lived auth sessions |
 | Schema evolution | Alembic migrations, rollback verification, historical backfill, revision compatibility checks |
 | Async correctness | SQLAlchemy AsyncSession, cancellation, connection lifecycle, native-async experiments |
-| Read performance | N+1 removal, PostgreSQL-revisioned Redis cache, profiling and controlled benchmarks |
+| Read performance | N+1 removal, PostgreSQL-revisioned Redis cache, query-plan analysis and controlled benchmarks |
+| Query correctness | Deterministic transaction pagination and a measured composite-index optimization (Phase A branch; merge pending) |
 | Demo | Moneta read-only web interface over existing authenticated FastAPI APIs |
 
-**Latest reported local regression:** **289 passed, 0 failed, 0 skipped** on migrated PostgreSQL with real Redis cache tests enabled (Moneta worktree). The GitHub Actions checks on the merged Moneta PR were green; their exact test count should be read from the CI logs. Older **208-test** reports covered an earlier, smaller production-suite scope.
+**Latest reported local regression:** **294 passed, 0 failed, 0 skipped** on isolated PostgreSQL with real Redis tests enabled (**Phase A worktree**, commit `37d3f8b`; not yet confirmed merged into `main`). The earlier Moneta worktree reported **289 passed**, and its merged PR passed GitHub Actions. These results belong to different code revisions and test collections; check CI for the Phase A PR separately. Older **208-test** reports covered an earlier, smaller production-suite scope.
 
 The verification applies to the scenarios exercised by the tests. It does not establish exhaustive correctness or production readiness.
 
@@ -107,7 +108,7 @@ The tests confirm:
 - Competing refund and reversal commands respect the shared serialization boundary.
 - Relevant canonical records, causal links, historical records, and audit state remain consistent in the tested scenarios.
 
-At that stage, the selected production test suite passed **208 tests** on an isolated PostgreSQL database. A later Moneta worktree regression reported **289 passed** under a different collection scope (see [Verification Strategy](#verification-strategy)).
+At that stage, the selected production test suite passed **208 tests** on an isolated PostgreSQL database. Later regressions reported **289 passed** on the Moneta worktree and **294 passed** on the Phase A worktree under different revision/test scopes (see [Verification Strategy](#verification-strategy)).
 
 **Implementation references:**
 
@@ -184,6 +185,56 @@ The selected design validates the JWT, loads the user in a short-lived authentic
 Lifecycle tests verify that authentication returns its connection before business checkout and that error and rollback paths preserve the intended boundary. Concurrent runs through **32 virtual users** reported no pool timeouts after the change. This establishes the tested lifecycle improvement, **not** unlimited throughput or production availability.
 
 **Implementation references:** `backend/app/routers/auth.py`, `backend/tests/test_auth_session_lifecycle.py`.
+
+---
+
+## Case Study: Deterministic Pagination and PostgreSQL Indexing
+
+An index audit of the transaction-listing endpoint uncovered **two separate issues**: an expensive ownership-scoped query for some users and an API response whose page ordering was not guaranteed.
+
+### The Correctness Boundary
+
+The original `GET /transactions` query applied `LIMIT` and `OFFSET` without an explicit `ORDER BY`. PostgreSQL does not guarantee row order in this case. On a seeded audit database, changing the join plan changed which transaction IDs appeared at the same offset, even though the underlying data was unchanged.
+
+Phase A defines a complete ordering contract using **`transactions.id ASC`**, with the primary key serving as a unique tie-breaker. This improves deterministic paging **for an unchanged dataset**; it does not prevent offset drift when concurrent inserts occur between requests. Ascending ID also means the first 100 results are the **oldest by ID**, not the newest, which is relevant to Moneta's presentation.
+
+### The Query and Index Decision
+
+The application filters the listing by `user_id` and now sorts by `id`:
+
+```sql
+SELECT ...
+FROM transactions
+JOIN financial_events ON ...
+WHERE transactions.user_id = :user_id
+ORDER BY transactions.id ASC
+LIMIT :limit OFFSET :skip;
+```
+
+This is a **schematic excerpt** of the application query, not an exact copy of SQLAlchemy's full generated SQL; the benchmark replay uses the generated SQL, including the real joins and filters.
+
+The audit then evaluated a composite B-tree index on **`transactions(user_id, id)`**. The index was added in migration `l2c0d7e4a588` using `CREATE INDEX CONCURRENTLY` inside an Alembic autocommit block, with explicit handling of an interrupted invalid build. Upgrade, downgrade and repeat upgrade were tested on a disposable database.
+
+### Measurement and Trade-offs
+
+Selected `EXPLAIN (ANALYZE, BUFFERS)` measurements from a synthetic PostgreSQL audit database containing about **498,000 transactions** (median of nine warm-cache runs):
+
+| Request/query component | Before index | After index |
+|---|---:|---:|
+| User with ~100 transactions, first page | 21.93 ms | 0.02 ms |
+| User with ~10,000 transactions, first page | 27.24 ms | 19.24 ms |
+| User with ~10,000 transactions, offset 5,000 | 36.77 ms | 20.80 ms |
+| User with ~100,000 transactions, offset 50,000 | 17.66 ms | 17.60 ms |
+
+These are **SQL execution measurements**, not HTTP end-to-end latency, and performance varied with user cardinality and plan choice. The index occupied approximately **11 MB** on the seeded database; one insert experiment showed approximately **10% additional write time**. Large offsets and the `COUNT` join for very large users remain expensive.
+
+### Verification and Scope
+
+Five new API pagination tests cover ordering, page boundaries, filters, authorization and ownership. They all passed, but **also passed when `ORDER BY` was temporarily removed** on the small test fixture; therefore, the separate large-dataset plan-change reproduction is the stronger evidence for the original non-determinism. Phase A's full local regression reported **294 passed, 0 failed, 0 skipped** with PostgreSQL and Redis. These results apply to commit `37d3f8b` on `feat/transactions-index-pagination`; **merge and GitHub CI status must be checked separately**.
+
+The same audit identified **four redundant non-unique indexes** whose key definitions overlap primary-key or unique-constraint indexes. They were **not removed in Phase A**. The associated database constraints remain in place; cleanup is deferred and would require its own reviewed migration.
+
+**Implementation references:** `backend/app/routers/transactions.py`, `backend/alembic/versions/l2c0d7e4a588_transactions_user_id_index.py`, `backend/tests/test_transactions_pagination.py`, `docs/transactions_index/README.md` (Phase A branch).
 
 ---
 
@@ -370,6 +421,7 @@ Verification includes:
 - Preservation of historical financial meaning during canonical-state backfill
 - Readiness rejection of incompatible schema revisions
 - Migration tests using disposable PostgreSQL databases
+- Concurrent index creation in a separate Alembic autocommit block (Phase A branch), including downgrade and invalid-index recovery checks
 
 The test infrastructure rejects the protected `finance_db` database as a pytest target.
 
@@ -381,7 +433,7 @@ These protections do not establish zero-downtime or rolling-upgrade compatibilit
 
 ## Verification Strategy
 
-The project follows a failure-oriented verification approach. The earlier 208-test baseline and newer 289-test Moneta worktree run use different collection scopes; do not compare their totals as a direct quality metric.
+The project follows a failure-oriented verification approach. The **208-test** earlier baseline, **289-test** Moneta worktree run and **294-test** Phase A worktree run span different code revisions and collection scopes; their totals must not be treated as a direct quality metric.
 
 1. Identify the business behavior and its correctness invariant.
 2. Determine which transaction, concurrency, or execution conditions could violate it.
@@ -397,12 +449,12 @@ Tests are treated as evidence for defined claims, not proof that every possible 
 
 | Result | Value |
 |---|---|
-| Passed | **289** |
+| Passed | **294** |
 | Failed / skipped | **0 / 0** |
 | Database | Disposable PostgreSQL migrated to Alembic head |
 | Cache tests | Real Redis integration included |
-| Scope | Moneta worktree's committed backend test suite |
-| GitHub CI | Merged Moneta PR checks passed; see CI logs for exact run details |
+| Scope | Phase A worktree (`feat/transactions-index-pagination`, commit `37d3f8b`) |
+| GitHub CI | Moneta PR checks passed previously; Phase A PR CI/merge **not yet verified** |
 
 Earlier experiments and local-only research artifacts have separate test scopes. The latest count above must not be interpreted as including every private experimental test.
 
@@ -528,7 +580,7 @@ Moneta is a lightweight **HTML/CSS/JavaScript interface** served at `GET /demo`.
 | Login | `POST /auth/login` | Existing account required; no hard-coded demo identity |
 | Dashboard | `GET /summary` | Shows current API summary, not all canonical projections |
 | Accounts | `GET /accounts`, `GET /projections/accounts` | Missing projections are shown explicitly, not fabricated |
-| Transactions | `GET /transactions` | Read-only, first 100 results loaded |
+| Transactions | `GET /transactions` | Read-only; first 100 **oldest-by-ID** results under Phase A ordering (after merge) |
 | Reconciliation | `GET /reconciliations/{id}` | Lookup by ID; no listing endpoint |
 | Engineering | Static explanation | Not a live operations console |
 
@@ -613,7 +665,7 @@ export DATABASE_URL="postgresql://USER:PASSWORD@localhost:5432/finance_test_db"
 pytest -q
 ```
 
-The default test command may include experimental suites with additional environmental requirements. The reported 289-test Moneta worktree run has a different scope from earlier experimental and private research suites.
+The default test command may include experimental suites with additional environmental requirements. The reported 294-test Phase A worktree run has a different code revision/collection scope from the earlier 289-test Moneta run and private experimental suites.
 
 **Warning:** Tests may create, modify, or destroy data. Never point the test runner at a database containing important records.
 
@@ -653,6 +705,8 @@ This project is guided by the following principles:
 
 **Do not treat cache TTL as a consistency mechanism.** PostgreSQL owns committed revisions; Redis stores derived responses only.
 
+**Make query ordering explicit.** Database execution plans must not determine an API pagination contract.
+
 **Control the cost of complexity.** Introduce mechanisms in response to explicit correctness requirements and demonstrated failure boundaries.
 
 ---
@@ -673,6 +727,8 @@ The current work does not establish:
 - Production-grade performance, availability, or operational readiness
 - Reliable cache hit rates under unknown real-world workloads
 - Pagination for extremely large provider listing histories
+- Stable offset pagination under concurrent writes; `GET /transactions` uses ID-ascending order and may require a separate newest-first UI query contract
+- Proven improvement for every database workload: the new composite index adds write/storage cost and offers limited gains for some high-cardinality users
 - Full financial write/reconciliation workflows from the Moneta UI
 
 Some guarantees also depend on application write paths following shared locking and transaction conventions. Direct database writes or future code paths that bypass those conventions require separate verification.
