@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
@@ -12,6 +12,13 @@ from app.auth import (
     decode_access_token,
     hash_password,
     verify_password_or_dummy,
+)
+from app.authorization import (
+    Access,
+    Authorized,
+    Subject,
+    evaluate_route,
+    policy_for,
 )
 from app.database import SessionLocal
 from app.models import User
@@ -64,6 +71,25 @@ def get_current_user(
         raise _unauthorized()
 
     return user
+
+
+def authorize_owner_route(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+) -> Authorized:
+    """Router-level guard: authentication (cached get_current_user) + this route's policy.
+
+    Handlers may depend on it again to receive the same cached ``Authorized``.
+    """
+    subject = Subject(current_user.id)
+    policy = policy_for(request)
+    if (
+        policy is None
+        or policy.access is not Access.OWNER
+        or not evaluate_route(policy, subject).allowed
+    ):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    return Authorized(subject, policy)
 
 
 @router.post("/register")
@@ -127,6 +153,6 @@ def login(user: UserLogin, db: Session = Depends(get_db)):
     return {"access_token": access_token, "token_type": "bearer"}
 
 
-@router.get("/me")
+@router.get("/me", dependencies=[Depends(authorize_owner_route)])
 def get_me(current_user: User = Depends(get_current_user)):
     return {"id": current_user.id, "email": current_user.email}

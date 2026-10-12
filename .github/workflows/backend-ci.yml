@@ -28,6 +28,18 @@ jobs:
           --health-timeout 5s
           --health-retries 5
 
+      # Disposable Redis for the cache integration tests. They call FLUSHDB on
+      # the database selected by REDIS_TEST_URL, so never point this at shared data.
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
     defaults:
       run:
         working-directory: backend
@@ -37,6 +49,10 @@ jobs:
       SECRET_KEY: test-secret-key
       ALGORITHM: HS256
       ACCESS_TOKEN_EXPIRE_MINUTES: 60
+      # Tests only. REDIS_URL stays unset so application caching is disabled
+      # except where the cache tests enable it explicitly.
+      REDIS_TEST_URL: redis://localhost:6379/15
+      REQUIRE_REDIS_TESTS: "1"
 
     steps:
       - name: Checkout code
@@ -56,6 +72,47 @@ jobs:
         run: |
           alembic upgrade head
 
-      - name: Run tests
+      - name: Verify database triggers
+        run: |
+          python - <<'PY'
+          import os, sys
+          from sqlalchemy import create_engine, text
+          required = {
+              "trg_external_transactions_immutable",
+              "trg_external_evidence_immutable",
+              "trg_external_transactions_listing_revision",
+              "trg_external_transaction_evidence_listing_revision",
+          }
+          with create_engine(os.environ["DATABASE_URL"]).connect() as c:
+              found = set(c.execute(text(
+                  "select tgname from pg_trigger where not tgisinternal")).scalars())
+          missing = required - found
+          if missing:
+              sys.exit(f"missing triggers: {sorted(missing)}")
+          print("triggers ok:", len(found))
+          PY
+
+      - name: Verify Redis connectivity
+        run: |
+          python - <<'PY'
+          import os, redis
+          client = redis.Redis.from_url(os.environ["REDIS_TEST_URL"], socket_timeout=3)
+          assert client.ping() is True
+          assert client.connection_pool.connection_kwargs.get("db") == 15
+          print("redis ok", client.info("server")["redis_version"])
+          PY
+
+      - name: Run Redis cache integration tests (must not skip)
+        run: |
+          pytest tests/test_provider_listing_cache.py -rs --junitxml=cache-junit.xml
+          python - <<'PY'
+          import xml.etree.ElementTree as ET
+          suite = ET.parse("cache-junit.xml").getroot().find("testsuite")
+          tests, skipped = int(suite.get("tests")), int(suite.get("skipped"))
+          assert tests >= 15 and skipped == 0, (tests, skipped)
+          print("cache tests:", tests, "skipped:", skipped)
+          PY
+
+      - name: Run full regression suite
         run: |
           pytest

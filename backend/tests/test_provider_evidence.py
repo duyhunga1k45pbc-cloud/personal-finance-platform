@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import event
 from sqlalchemy.exc import DBAPIError
 
+from app import listing_cache
 from app.canonical_audit import audit_user, find_first_provider_evidence_divergence
 from app.database import Base, SessionLocal, engine
 from app.main import app
@@ -309,7 +310,15 @@ def test_external_transaction_listing_counts_all_evidence_and_preserves_order():
     )
     assert [row["evidence_count"] for row in rows] == [0, 1, 2]
     assert all(row["first_observed_at"] for row in rows)
-    assert len(statements) == 3
+    # Cache disabled (default): auth user, ownership, listing. With the cache enabled a
+    # miss adds exactly one statement, the committed-revision read; anything else is a regression.
+    revision_reads = [s for s in statements if "provider_listing_revisions" in s]
+    if listing_cache.enabled():
+        assert len(revision_reads) == 1
+        assert len(statements) == 4
+    else:
+        assert revision_reads == []
+        assert len(statements) == 3
 
 
 def test_external_transaction_listing_hides_foreign_provider_connection():

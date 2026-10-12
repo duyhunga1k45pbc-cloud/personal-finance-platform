@@ -19,10 +19,12 @@ from app.observability import (
     sanitize_request_id,
 )
 from app.routers import accounts, auth, causal_events, observability, projections, providers, reconciliations, transactions, transfers
-from app.routers.auth import get_current_user
+from app.authorization import assert_only_policed_routes, enforce_declared_policy
+from app.routers.auth import authorize_owner_route, get_current_user
 from app.security import settings
 
 app = FastAPI(
+    dependencies=[Depends(enforce_declared_policy)],
     title="Personal Finance API",
     description="Backend API quản lý thu chi cá nhân",
     version="1.0.0",
@@ -34,6 +36,7 @@ app = FastAPI(
 
 @app.on_event("startup")
 def deployment_startup_gate():
+    assert_only_policed_routes(app)
     assert_startup_ready()
     mark_process_serving()
 
@@ -117,6 +120,7 @@ app.include_router(reconciliations.router)
 app.include_router(observability.router)
 app.include_router(projections.router)
 app.include_router(providers.router)
+assert_only_policed_routes(app)
 
 
 def get_db():
@@ -132,7 +136,7 @@ def home():
     return {"message": "Chào mừng bạn đến với ứng dụng Quản lý Tài chính!"}
 
 
-@app.get("/summary")
+@app.get("/summary", dependencies=[Depends(authorize_owner_route)])
 def get_summary(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),

@@ -23,10 +23,18 @@ from app.command_service import (
 )
 from app.database import SessionLocal
 from app.models import FinancialEvent, FinancialEventHistory, Transaction, User
-from app.routers.auth import get_current_user
+from app.authorization import (
+    Action,
+    Authorized,
+    ResourceType,
+    Subject,
+    authorize_object,
+    owned,
+)
+from app.routers.auth import authorize_owner_route, get_current_user
 from app.schemas import TransactionCreate
 
-router = APIRouter(prefix="/transactions", tags=["transactions"])
+router = APIRouter(prefix="/transactions", tags=["transactions"], dependencies=[Depends(authorize_owner_route)])
 
 
 def get_db():
@@ -59,15 +67,12 @@ def _resolve_owned_account(
 
 def _active_transaction_query(db: Session, user_id: int):
     return (
-        db.query(Transaction)
+        owned(db.query(Transaction), Transaction.user_id, Subject(user_id))
         .join(
             FinancialEvent,
             FinancialEvent.legacy_transaction_id == Transaction.id,
         )
-        .filter(
-            Transaction.user_id == user_id,
-            FinancialEvent.lifecycle_state == "ACTIVE",
-        )
+        .filter(FinancialEvent.lifecycle_state == "ACTIVE")
     )
 
 
@@ -177,6 +182,7 @@ def get_transaction(
     transaction_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    authorized: Authorized = Depends(authorize_owner_route),
 ):
     transaction = (
         _active_transaction_query(db, current_user.id)
@@ -186,6 +192,9 @@ def get_transaction(
 
     if transaction is None:
         raise HTTPException(status_code=404, detail="Transaction not found")
+    authorize_object(
+        authorized, ResourceType.TRANSACTION, Action.READ, transaction.user_id
+    )
 
     event = (
         db.query(FinancialEvent)

@@ -15,11 +15,11 @@ from app.command_service import (
 )
 from app.database import SessionLocal
 from app.models import FinancialEventEntry, User
-from app.routers.auth import get_current_user
+from app.routers.auth import authorize_owner_route, get_current_user
 from app.schemas import TransferCreate
 from app.transfer_service import create_transfer_event
 
-router = APIRouter(prefix="/transfers", tags=["transfers"])
+router = APIRouter(prefix="/transfers", tags=["transfers"], dependencies=[Depends(authorize_owner_route)])
 
 
 def get_db():

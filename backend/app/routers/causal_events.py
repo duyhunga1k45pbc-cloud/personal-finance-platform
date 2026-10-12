@@ -15,10 +15,10 @@ from app.command_service import (
 )
 from app.database import SessionLocal
 from app.models import FinancialEventEntry, FinancialEventLink, User
-from app.routers.auth import get_current_user
+from app.routers.auth import authorize_owner_route, get_current_user
 from app.schemas import RefundCreate, ReversalCreate
 
-router = APIRouter(tags=["causal-events"])
+router = APIRouter(tags=["causal-events"], dependencies=[Depends(authorize_owner_route)])
 
 
 def get_db():

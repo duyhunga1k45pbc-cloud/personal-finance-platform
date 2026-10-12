@@ -1,6 +1,7 @@
 import datetime
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     Column,
@@ -436,6 +437,21 @@ class ProviderConnection(Base):
         nullable=False,
         default=lambda: datetime.datetime.now(datetime.timezone.utc),
     )
+
+
+class ProviderListingRevision(Base):
+    """Committed-data revision of one connection's external transaction listing.
+
+    Advanced only by PostgreSQL triggers on external_transactions and
+    external_transaction_evidence, inside the writing transaction.
+    """
+
+    __tablename__ = "provider_listing_revisions"
+
+    provider_connection_id = Column(
+        Integer, ForeignKey("provider_connections.id"), primary_key=True
+    )
+    revision = Column(BigInteger, nullable=False)
 
 
 class ExternalTransaction(Base):

@@ -1,5 +1,6 @@
 from sqlalchemy.orm import Session
 
+from app.authorization import Subject, owned
 from app.models import FinancialAccount
 
 DEFAULT_CASH_ACCOUNT_NAME = "Default Cash"
@@ -35,10 +36,7 @@ def get_owned_account(
     account_id: int,
 ) -> FinancialAccount | None:
     return (
-        db.query(FinancialAccount)
-        .filter(
-            FinancialAccount.id == account_id,
-            FinancialAccount.user_id == user_id,
-        )
+        owned(db.query(FinancialAccount), FinancialAccount.user_id, Subject(user_id))
+        .filter(FinancialAccount.id == account_id)
         .first()
     )
