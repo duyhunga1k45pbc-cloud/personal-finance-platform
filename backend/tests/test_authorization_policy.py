@@ -97,11 +97,11 @@ def test_every_route_declares_a_policy_and_is_guarded_accordingly():
             policy = ROUTE_POLICIES.get(key)
             if policy is None:
                 undeclared.append(key)
-            elif policy.access is Access.OWNER and "get_current_user" not in deps:
+            elif policy.access is Access.OWNER and not ({"get_current_user", "get_principal"} & deps):
                 unguarded.append(key)
             elif policy.access is Access.METRICS_TOKEN and "authorize_metrics" not in deps:
                 unguarded.append(key)
-            elif policy.access is Access.PUBLIC and "get_current_user" in deps:
+            elif policy.access is Access.PUBLIC and ({"get_current_user", "get_principal"} & deps):
                 unguarded.append(key)  # stale policy: declared public but guarded
     assert not undeclared, f"routes without policy: {undeclared}"
     assert not unguarded, f"routes whose guard disagrees with policy: {unguarded}"
@@ -119,7 +119,7 @@ def test_router_level_guard_is_declared_on_owner_scoped_routers():
         providers.router,
     ):
         assert any(
-            d.dependency in (auth.get_current_user, auth.authorize_owner_route)
+            d.dependency in (auth.get_current_user, auth.authorize_owner_route, auth.authorize_owner_principal)
             for d in router.dependencies
         ), router.prefix
 

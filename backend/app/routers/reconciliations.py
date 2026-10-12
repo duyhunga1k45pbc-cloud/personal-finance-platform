@@ -11,7 +11,7 @@ from app.command_service import (
     normalize_idempotency_key,
 )
 from app.database import SessionLocal
-from app.models import ReconciliationCase, User
+from app.models import ReconciliationCase
 from app.reconciliation_service import (
     ReconciliationConflictError,
     ReconciliationError,
@@ -21,10 +21,10 @@ from app.reconciliation_service import (
     get_owned_reconciliation,
     resolve_reconciliation_with_real_events,
 )
-from app.routers.auth import authorize_owner_route, get_current_user
+from app.routers.auth import Principal, authorize_owner_principal, get_principal
 from app.schemas import AdjustmentConfirm, ReconciliationCreate, ReconciliationResolve
 
-router = APIRouter(prefix="/reconciliations", tags=["reconciliations"], dependencies=[Depends(authorize_owner_route)])
+router = APIRouter(prefix="/reconciliations", tags=["reconciliations"], dependencies=[Depends(authorize_owner_principal)])
 
 
 def get_db():
@@ -126,7 +126,7 @@ def _translate_reconciliation_error(exc: ReconciliationError):
 def get_reconciliation(
     reconciliation_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: Principal = Depends(get_principal),
 ):
     try:
         case = get_owned_reconciliation(
@@ -144,7 +144,7 @@ def create_reconciliation(
     payload: ReconciliationCreate,
     idempotency_key: str = Header(..., alias="Idempotency-Key"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: Principal = Depends(get_principal),
 ):
     command_type = "CREATE_RECONCILIATION"
     key = _normalize_command_key(idempotency_key)
@@ -206,7 +206,7 @@ def resolve_reconciliation(
     idempotency_key: str = Header(..., alias="Idempotency-Key"),
     expected_version: int = Header(..., alias="X-Expected-Version"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: Principal = Depends(get_principal),
 ):
     command_type = "RESOLVE_RECONCILIATION"
     key = _normalize_command_key(idempotency_key)
@@ -269,7 +269,7 @@ def confirm_adjustment(
     idempotency_key: str = Header(..., alias="Idempotency-Key"),
     expected_version: int = Header(..., alias="X-Expected-Version"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: Principal = Depends(get_principal),
 ):
     command_type = "CONFIRM_RECONCILIATION_ADJUSTMENT"
     key = _normalize_command_key(idempotency_key)

@@ -9,7 +9,6 @@ from app import models
 from app.canonical_service import canonical_summary
 from app.database import SessionLocal
 from app.deployment import assert_startup_ready, mark_process_draining, mark_process_serving
-from app.models import User
 from app.observability import (
     bind_request_id,
     increment_metric,
@@ -20,7 +19,7 @@ from app.observability import (
 )
 from app.routers import accounts, auth, causal_events, observability, projections, providers, reconciliations, transactions, transfers
 from app.authorization import assert_only_policed_routes, enforce_declared_policy
-from app.routers.auth import authorize_owner_route, get_current_user
+from app.routers.auth import Principal, authorize_owner_principal, get_principal
 from app.security import settings
 
 app = FastAPI(
@@ -136,10 +135,10 @@ def home():
     return {"message": "Chào mừng bạn đến với ứng dụng Quản lý Tài chính!"}
 
 
-@app.get("/summary", dependencies=[Depends(authorize_owner_route)])
+@app.get("/summary", dependencies=[Depends(authorize_owner_principal)])
 def get_summary(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: Principal = Depends(get_principal),
 ):
     summary = canonical_summary(db, current_user.id)
     return {

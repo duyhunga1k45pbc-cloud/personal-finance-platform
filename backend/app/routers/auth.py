@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import func
@@ -73,15 +75,44 @@ def get_current_user(
     return user
 
 
-def authorize_owner_route(
-    request: Request,
-    current_user: User = Depends(get_current_user),
-) -> Authorized:
-    """Router-level guard: authentication (cached get_current_user) + this route's policy.
+@dataclass(frozen=True)
+class Principal:
+    """Verified identity copied out of PostgreSQL; holds no ORM state or connection."""
 
-    Handlers may depend on it again to receive the same cached ``Authorized``.
+    id: int
+    email: str
+
+
+def get_principal(
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
+) -> Principal:
+    """Authenticate with a short-lived session that is closed before the handler runs.
+
+    Same JWT validation and user-existence check as get_current_user. The session is
+    private to this dependency, so its pooled connection is back in the pool before
+    any business session needs one.
     """
-    subject = Subject(current_user.id)
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        raise _unauthorized()
+
+    payload = decode_access_token(credentials.credentials)
+    if payload is None:
+        raise _unauthorized()
+
+    try:
+        user_id = int(payload["sub"])
+    except (KeyError, TypeError, ValueError):
+        raise _unauthorized()
+
+    with SessionLocal() as db:
+        row = db.query(User.id, User.email).filter(User.id == user_id).first()
+    if row is None:
+        raise _unauthorized()
+    return Principal(id=row.id, email=row.email)
+
+
+def _authorize_owner(request: Request, user_id: int) -> Authorized:
+    subject = Subject(user_id)
     policy = policy_for(request)
     if (
         policy is None
@@ -90,6 +121,25 @@ def authorize_owner_route(
     ):
         raise HTTPException(status_code=403, detail="Forbidden")
     return Authorized(subject, policy)
+
+
+def authorize_owner_route(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+) -> Authorized:
+    """Router-level guard: authentication (cached get_current_user) + this route's policy.
+
+    Handlers may depend on it again to receive the same cached ``Authorized``.
+    """
+    return _authorize_owner(request, current_user.id)
+
+
+def authorize_owner_principal(
+    request: Request,
+    principal: Principal = Depends(get_principal),
+) -> Authorized:
+    """Same guard as authorize_owner_route, fed by the short-lived-session principal."""
+    return _authorize_owner(request, principal.id)
 
 
 @router.post("/register")
@@ -153,6 +203,6 @@ def login(user: UserLogin, db: Session = Depends(get_db)):
     return {"access_token": access_token, "token_type": "bearer"}
 
 
-@router.get("/me", dependencies=[Depends(authorize_owner_route)])
-def get_me(current_user: User = Depends(get_current_user)):
+@router.get("/me", dependencies=[Depends(authorize_owner_principal)])
+def get_me(current_user: Principal = Depends(get_principal)):
     return {"id": current_user.id, "email": current_user.email}

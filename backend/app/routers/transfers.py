@@ -14,12 +14,12 @@ from app.command_service import (
     normalize_idempotency_key,
 )
 from app.database import SessionLocal
-from app.models import FinancialEventEntry, User
-from app.routers.auth import authorize_owner_route, get_current_user
+from app.models import FinancialEventEntry
+from app.routers.auth import Principal, authorize_owner_principal, get_principal
 from app.schemas import TransferCreate
 from app.transfer_service import create_transfer_event
 
-router = APIRouter(prefix="/transfers", tags=["transfers"], dependencies=[Depends(authorize_owner_route)])
+router = APIRouter(prefix="/transfers", tags=["transfers"], dependencies=[Depends(authorize_owner_principal)])
 
 
 def get_db():
@@ -76,7 +76,7 @@ def create_transfer(
     transfer: TransferCreate,
     idempotency_key: str = Header(..., alias="Idempotency-Key"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: Principal = Depends(get_principal),
 ):
     command_type = "CREATE_TRANSFER"
     key = _normalize_command_key(idempotency_key)
