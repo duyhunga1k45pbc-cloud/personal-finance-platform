@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
-from app.models import FinancialAccountBalanceProjection, User
+from app.models import FinancialAccountBalanceProjection
 from app.projection_service import (
     ProjectionMissingError,
     ProjectionStaleError,
@@ -11,10 +11,10 @@ from app.projection_service import (
     require_fresh_projection,
 )
 from app.authorization import Subject, owned
-from app.routers.auth import authorize_owner_route, get_current_user
+from app.routers.auth import Principal, authorize_owner_principal, get_principal
 
 
-router = APIRouter(prefix="/projections", tags=["projections"], dependencies=[Depends(authorize_owner_route)])
+router = APIRouter(prefix="/projections", tags=["projections"], dependencies=[Depends(authorize_owner_principal)])
 
 
 def get_db():
@@ -50,7 +50,7 @@ def _fresh_state_or_http_error(db: Session, user_id: int):
 @router.post("/rebuild")
 def rebuild_projection(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: Principal = Depends(get_principal),
 ):
     state = rebuild_user_projection(db, current_user.id)
     return _state_payload(state)
@@ -59,7 +59,7 @@ def rebuild_projection(
 @router.get("/status")
 def get_projection_status(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: Principal = Depends(get_principal),
 ):
     status = projection_status(db, current_user.id)
     return {
@@ -74,7 +74,7 @@ def get_projection_status(
 @router.get("/summary")
 def get_projection_summary(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: Principal = Depends(get_principal),
 ):
     return _state_payload(_fresh_state_or_http_error(db, current_user.id))
 
@@ -82,7 +82,7 @@ def get_projection_summary(
 @router.get("/accounts")
 def get_projected_account_balances(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: Principal = Depends(get_principal),
 ):
     state = _fresh_state_or_http_error(db, current_user.id)
     rows = (

@@ -4,11 +4,11 @@ from sqlalchemy.orm import Session
 from app.account_service import get_owned_account
 from app.authorization import Action, Authorized, ResourceType, Subject, authorize_object, owned
 from app.database import SessionLocal
-from app.models import FinancialAccount, User
-from app.routers.auth import authorize_owner_route, get_current_user
+from app.models import FinancialAccount
+from app.routers.auth import Principal, authorize_owner_principal, get_principal
 from app.schemas import FinancialAccountCreate, FinancialAccountRead
 
-router = APIRouter(prefix="/accounts", tags=["accounts"], dependencies=[Depends(authorize_owner_route)])
+router = APIRouter(prefix="/accounts", tags=["accounts"], dependencies=[Depends(authorize_owner_principal)])
 
 
 def get_db():
@@ -22,7 +22,7 @@ def get_db():
 @router.get("", response_model=list[FinancialAccountRead])
 def list_accounts(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: Principal = Depends(get_principal),
 ):
     return (
         owned(db.query(FinancialAccount), FinancialAccount.user_id, Subject(current_user.id))
@@ -35,7 +35,7 @@ def list_accounts(
 def create_account(
     account: FinancialAccountCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: Principal = Depends(get_principal),
 ):
     new_account = FinancialAccount(
         user_id=current_user.id,
@@ -54,8 +54,8 @@ def create_account(
 def get_account(
     account_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-    authorized: Authorized = Depends(authorize_owner_route),
+    current_user: Principal = Depends(get_principal),
+    authorized: Authorized = Depends(authorize_owner_principal),
 ):
     account = get_owned_account(db, current_user.id, account_id)
     if account is None:

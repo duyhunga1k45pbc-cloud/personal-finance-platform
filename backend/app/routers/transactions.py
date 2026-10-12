@@ -22,7 +22,7 @@ from app.command_service import (
     normalize_idempotency_key,
 )
 from app.database import SessionLocal
-from app.models import FinancialEvent, FinancialEventHistory, Transaction, User
+from app.models import FinancialEvent, FinancialEventHistory, Transaction
 from app.authorization import (
     Action,
     Authorized,
@@ -31,10 +31,10 @@ from app.authorization import (
     authorize_object,
     owned,
 )
-from app.routers.auth import authorize_owner_route, get_current_user
+from app.routers.auth import Principal, authorize_owner_principal, get_principal
 from app.schemas import TransactionCreate
 
-router = APIRouter(prefix="/transactions", tags=["transactions"], dependencies=[Depends(authorize_owner_route)])
+router = APIRouter(prefix="/transactions", tags=["transactions"], dependencies=[Depends(authorize_owner_principal)])
 
 
 def get_db():
@@ -158,7 +158,7 @@ def list_transactions(
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=10, ge=1, le=100),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: Principal = Depends(get_principal),
 ):
     query = _active_transaction_query(db, current_user.id)
     if type is not None:
@@ -181,8 +181,8 @@ def list_transactions(
 def get_transaction(
     transaction_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-    authorized: Authorized = Depends(authorize_owner_route),
+    current_user: Principal = Depends(get_principal),
+    authorized: Authorized = Depends(authorize_owner_principal),
 ):
     transaction = (
         _active_transaction_query(db, current_user.id)
@@ -208,7 +208,7 @@ def get_transaction(
 def get_transaction_history(
     transaction_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: Principal = Depends(get_principal),
 ):
     transaction = (
         db.query(Transaction)
@@ -257,7 +257,7 @@ def create_transaction(
     transaction: TransactionCreate,
     idempotency_key: str = Header(..., alias="Idempotency-Key"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: Principal = Depends(get_principal),
 ):
     command_type = "CREATE_TRANSACTION"
     key = _normalize_command_key(idempotency_key)
@@ -344,7 +344,7 @@ def update_transaction(
     idempotency_key: str = Header(..., alias="Idempotency-Key"),
     expected_version: int = Header(..., alias="X-Expected-Version", ge=1),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: Principal = Depends(get_principal),
 ):
     command_type = "UPDATE_TRANSACTION"
     key = _normalize_command_key(idempotency_key)
@@ -454,7 +454,7 @@ def delete_transaction(
     idempotency_key: str = Header(..., alias="Idempotency-Key"),
     expected_version: int = Header(..., alias="X-Expected-Version", ge=1),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: Principal = Depends(get_principal),
 ):
     command_type = "DELETE_TRANSACTION"
     key = _normalize_command_key(idempotency_key)

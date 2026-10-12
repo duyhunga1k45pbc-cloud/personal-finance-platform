@@ -24,7 +24,6 @@ from app.models import (
     ProviderSyncPage,
     ProviderSyncPageEvidence,
     ProviderTransactionInterpretation,
-    User,
 )
 from app.provider_service import (
     get_or_create_provider_connection,
@@ -41,7 +40,7 @@ from app.provider_interpretation_service import (
 )
 from app.provider_lifecycle_service import get_provider_lifecycle, snapshot_provider_lifecycle
 from app.authorization import Action, Authorized, ResourceType, Subject, authorize_object, owned
-from app.routers.auth import authorize_owner_route, get_current_user
+from app.routers.auth import Principal, authorize_owner_principal, get_principal
 from app.schemas import (
     ExternalTransactionEvidenceCreate,
     ProviderClassificationCreate,
@@ -50,7 +49,7 @@ from app.schemas import (
     ProviderNormalizationCreate,
 )
 
-router = APIRouter(prefix="/provider-connections", tags=["provider-evidence"], dependencies=[Depends(authorize_owner_route)])
+router = APIRouter(prefix="/provider-connections", tags=["provider-evidence"], dependencies=[Depends(authorize_owner_principal)])
 
 
 def get_db():
@@ -109,7 +108,7 @@ def _evidence_body(result) -> dict:
 def create_provider_connection(
     payload: ProviderConnectionCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: Principal = Depends(get_principal),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ):
     key = _require_key(idempotency_key)
@@ -160,7 +159,7 @@ def create_provider_connection(
 @router.get("")
 def list_provider_connections(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: Principal = Depends(get_principal),
 ):
     rows = (
         owned(db.query(ProviderConnection), ProviderConnection.user_id, Subject(current_user.id))
@@ -174,8 +173,8 @@ def list_provider_connections(
 def get_provider_connection(
     connection_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-    authorized: Authorized = Depends(authorize_owner_route),
+    current_user: Principal = Depends(get_principal),
+    authorized: Authorized = Depends(authorize_owner_principal),
 ):
     connection = get_owned_provider_connection(
         db,
@@ -198,7 +197,7 @@ def ingest_provider_transaction(
     connection_id: int,
     payload: ExternalTransactionEvidenceCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: Principal = Depends(get_principal),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ):
     connection = get_owned_provider_connection(
@@ -262,7 +261,7 @@ def ingest_provider_transaction(
 def list_external_transactions(
     connection_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: Principal = Depends(get_principal),
 ):
     connection = get_owned_provider_connection(
         db,
@@ -338,7 +337,7 @@ def list_external_transaction_evidence(
     connection_id: int,
     transaction_record_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: Principal = Depends(get_principal),
 ):
     connection = get_owned_provider_connection(
         db,
@@ -420,7 +419,7 @@ def normalize_provider_transaction(
     transaction_record_id: int,
     payload: ProviderNormalizationCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: Principal = Depends(get_principal),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ):
     connection = get_owned_provider_connection(db, user_id=current_user.id, connection_id=connection_id)
@@ -496,7 +495,7 @@ def get_provider_interpretation(
     connection_id: int,
     transaction_record_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: Principal = Depends(get_principal),
 ):
     connection = get_owned_provider_connection(db, user_id=current_user.id, connection_id=connection_id)
     if connection is None:
@@ -520,7 +519,7 @@ def get_provider_transaction_lifecycle(
     connection_id: int,
     transaction_record_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: Principal = Depends(get_principal),
 ):
     connection = get_owned_provider_connection(db, user_id=current_user.id, connection_id=connection_id)
     if connection is None:
@@ -547,7 +546,7 @@ def classify_provider_transaction(
     transaction_record_id: int,
     payload: ProviderClassificationCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: Principal = Depends(get_principal),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     expected_version: int | None = Header(default=None, alias="X-Expected-Version"),
 ):
@@ -589,7 +588,7 @@ def confirm_provider_transaction(
     transaction_record_id: int,
     payload: ProviderInterpretationConfirm,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: Principal = Depends(get_principal),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     expected_version: int | None = Header(default=None, alias="X-Expected-Version"),
 ):
@@ -632,7 +631,7 @@ def confirm_provider_transaction(
 def get_provider_sync_checkpoint(
     connection_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: Principal = Depends(get_principal),
 ):
     connection = get_owned_provider_connection(
         db,
@@ -679,7 +678,7 @@ def get_provider_sync_checkpoint(
 def list_provider_sync_pages(
     connection_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: Principal = Depends(get_principal),
 ):
     connection = get_owned_provider_connection(
         db,
