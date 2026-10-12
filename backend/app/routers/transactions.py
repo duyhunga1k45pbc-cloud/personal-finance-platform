@@ -167,7 +167,8 @@ def list_transactions(
         query = query.filter(Transaction.category == category)
 
     total = query.count()
-    transactions = query.offset(skip).limit(limit).all()
+    # Explicit, unique ordering: unordered OFFSET/LIMIT is not deterministic in PostgreSQL.
+    transactions = query.order_by(Transaction.id.asc()).offset(skip).limit(limit).all()
 
     return {
         "total": total,
