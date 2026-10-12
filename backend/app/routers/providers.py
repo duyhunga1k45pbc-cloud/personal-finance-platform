@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Response
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -12,6 +14,7 @@ from app.command_service import (
     hash_command,
     normalize_idempotency_key,
 )
+from app import listing_cache
 from app.database import SessionLocal
 from app.models import (
     ExternalTransaction,
@@ -269,6 +272,25 @@ def list_external_transactions(
     if connection is None:
         raise HTTPException(status_code=404, detail="Provider connection not found")
 
+    if not listing_cache.enabled():
+        return _load_external_transactions(db, connection)
+
+    # Ownership is verified above in PostgreSQL. The revision is read before the
+    # data, so loaded data is never older than the revision in the cache key.
+    key = listing_cache.cache_key(
+        user_id=current_user.id,
+        connection_id=connection.id,
+        revision=listing_cache.read_revision(db, connection.id),
+    )
+    cached = listing_cache.get_cached(key)
+    if cached is not None:
+        return Response(content=cached, media_type="application/json")
+    body = JSONResponse(jsonable_encoder(_load_external_transactions(db, connection))).body
+    listing_cache.put_cached(key, body)
+    return Response(content=body, media_type="application/json")
+
+
+def _load_external_transactions(db: Session, connection: ProviderConnection) -> list[dict]:
     evidence_counts = (
         db.query(
             ExternalTransactionEvidence.external_transaction_record_id.label(
