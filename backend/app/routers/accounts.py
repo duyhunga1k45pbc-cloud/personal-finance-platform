@@ -2,12 +2,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.account_service import get_owned_account
+from app.authorization import Action, Authorized, ResourceType, Subject, authorize_object, owned
 from app.database import SessionLocal
 from app.models import FinancialAccount, User
-from app.routers.auth import get_current_user
+from app.routers.auth import authorize_owner_route, get_current_user
 from app.schemas import FinancialAccountCreate, FinancialAccountRead
 
-router = APIRouter(prefix="/accounts", tags=["accounts"])
+router = APIRouter(prefix="/accounts", tags=["accounts"], dependencies=[Depends(authorize_owner_route)])
 
 
 def get_db():
@@ -24,8 +25,7 @@ def list_accounts(
     current_user: User = Depends(get_current_user),
 ):
     return (
-        db.query(FinancialAccount)
-        .filter(FinancialAccount.user_id == current_user.id)
+        owned(db.query(FinancialAccount), FinancialAccount.user_id, Subject(current_user.id))
         .order_by(FinancialAccount.id)
         .all()
     )
@@ -55,8 +55,10 @@ def get_account(
     account_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    authorized: Authorized = Depends(authorize_owner_route),
 ):
     account = get_owned_account(db, current_user.id, account_id)
     if account is None:
         raise HTTPException(status_code=404, detail="Account not found")
+    authorize_object(authorized, ResourceType.ACCOUNT, Action.READ, account.user_id)
     return account

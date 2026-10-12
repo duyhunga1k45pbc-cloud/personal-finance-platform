@@ -10,10 +10,11 @@ from app.projection_service import (
     rebuild_user_projection,
     require_fresh_projection,
 )
-from app.routers.auth import get_current_user
+from app.authorization import Subject, owned
+from app.routers.auth import authorize_owner_route, get_current_user
 
 
-router = APIRouter(prefix="/projections", tags=["projections"])
+router = APIRouter(prefix="/projections", tags=["projections"], dependencies=[Depends(authorize_owner_route)])
 
 
 def get_db():
@@ -85,11 +86,12 @@ def get_projected_account_balances(
 ):
     state = _fresh_state_or_http_error(db, current_user.id)
     rows = (
-        db.query(FinancialAccountBalanceProjection)
-        .filter(
-            FinancialAccountBalanceProjection.user_id == current_user.id,
-            FinancialAccountBalanceProjection.generation == state.generation,
+        owned(
+            db.query(FinancialAccountBalanceProjection),
+            FinancialAccountBalanceProjection.user_id,
+            Subject(current_user.id),
         )
+        .filter(FinancialAccountBalanceProjection.generation == state.generation)
         .order_by(FinancialAccountBalanceProjection.account_id.asc())
         .all()
     )

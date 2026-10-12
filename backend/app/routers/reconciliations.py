@@ -21,10 +21,10 @@ from app.reconciliation_service import (
     get_owned_reconciliation,
     resolve_reconciliation_with_real_events,
 )
-from app.routers.auth import get_current_user
+from app.routers.auth import authorize_owner_route, get_current_user
 from app.schemas import AdjustmentConfirm, ReconciliationCreate, ReconciliationResolve
 
-router = APIRouter(prefix="/reconciliations", tags=["reconciliations"])
+router = APIRouter(prefix="/reconciliations", tags=["reconciliations"], dependencies=[Depends(authorize_owner_route)])
 
 
 def get_db():

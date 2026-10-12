@@ -37,7 +37,8 @@ from app.provider_interpretation_service import (
     normalize_external_transaction,
 )
 from app.provider_lifecycle_service import get_provider_lifecycle, snapshot_provider_lifecycle
-from app.routers.auth import get_current_user
+from app.authorization import Action, Authorized, ResourceType, Subject, authorize_object, owned
+from app.routers.auth import authorize_owner_route, get_current_user
 from app.schemas import (
     ExternalTransactionEvidenceCreate,
     ProviderClassificationCreate,
@@ -46,7 +47,7 @@ from app.schemas import (
     ProviderNormalizationCreate,
 )
 
-router = APIRouter(prefix="/provider-connections", tags=["provider-evidence"])
+router = APIRouter(prefix="/provider-connections", tags=["provider-evidence"], dependencies=[Depends(authorize_owner_route)])
 
 
 def get_db():
@@ -159,8 +160,7 @@ def list_provider_connections(
     current_user: User = Depends(get_current_user),
 ):
     rows = (
-        db.query(ProviderConnection)
-        .filter(ProviderConnection.user_id == current_user.id)
+        owned(db.query(ProviderConnection), ProviderConnection.user_id, Subject(current_user.id))
         .order_by(ProviderConnection.id.asc())
         .all()
     )
@@ -172,6 +172,7 @@ def get_provider_connection(
     connection_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    authorized: Authorized = Depends(authorize_owner_route),
 ):
     connection = get_owned_provider_connection(
         db,
@@ -180,6 +181,12 @@ def get_provider_connection(
     )
     if connection is None:
         raise HTTPException(status_code=404, detail="Provider connection not found")
+    authorize_object(
+        authorized,
+        ResourceType.PROVIDER_CONNECTION,
+        Action.READ,
+        connection.user_id,
+    )
     return _connection_body(connection, deduplicated=False)
 
 
