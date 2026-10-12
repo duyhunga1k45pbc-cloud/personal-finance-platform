@@ -36,6 +36,8 @@ class Transaction(Base):
         index=True,
     )
 
+    __table_args__ = (Index("ix_transactions_user_id_id", "user_id", "id"),)
+
 
 class User(Base):
     __tablename__ = "users"
