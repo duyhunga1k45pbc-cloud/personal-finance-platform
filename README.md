@@ -30,7 +30,7 @@ Rather than optimizing for feature count, the project emphasizes understanding f
 | Query correctness | Deterministic transaction pagination and a measured composite-index optimization (Phase A branch; merge pending) |
 | Demo | Moneta read-only web interface over existing authenticated FastAPI APIs |
 
-**Latest reported local regression:** **294 passed, 0 failed, 0 skipped** on isolated PostgreSQL with real Redis tests enabled (**Phase A worktree**, commit `37d3f8b`; not yet confirmed merged into `main`). The earlier Moneta worktree reported **289 passed**, and its merged PR passed GitHub Actions. These results belong to different code revisions and test collections; check CI for the Phase A PR separately. Older **208-test** reports covered an earlier, smaller production-suite scope.
+**Latest reported local regression:** **328 passed, 0 failed, 0 skipped** on isolated PostgreSQL with real Redis tests enabled, including the Redis fault injection and financial invariant verification case study suite (`backend/tests/test_redis_fault_injection_correctness.py`). Earlier milestone regressions reported **289 passed** on the Moneta worktree and **294 passed** on the Phase A worktree under different revision/test scopes (see [Verification Strategy](#verification-strategy)).
 
 The verification applies to the scenarios exercised by the tests. It does not establish exhaustive correctness or production readiness.
 
@@ -158,7 +158,7 @@ PostgreSQL and Redis integration tests cover rollback, savepoints, concurrent wr
 
 The design still makes PostgreSQL authorization/revision queries on a cache hit, serializes revision updates for the same connection, and retains older Redis keys until their TTLs expire. The provider listing still needs pagination for very large histories.
 
-**Implementation references:** `backend/app/listing_cache.py`, migration `k1b9c6d3f477`, `backend/tests/test_provider_listing_cache.py`.
+**Implementation references:** `backend/app/listing_cache.py`, migration `k1b9c6d3f477`, `backend/tests/test_provider_listing_cache.py`, `backend/tests/test_provider_listing_revision_concurrency.py`, `backend/tests/test_redis_fault_injection_correctness.py`, and [Redis Fault Injection Case Study](docs/REDIS_FAULT_INJECTION_CASE_STUDY.md).
 
 ---
 
@@ -449,12 +449,12 @@ Tests are treated as evidence for defined claims, not proof that every possible 
 
 | Result | Value |
 |---|---|
-| Passed | **294** |
+| Passed | **328** |
 | Failed / skipped | **0 / 0** |
 | Database | Disposable PostgreSQL migrated to Alembic head |
 | Cache tests | Real Redis integration included |
-| Scope | Phase A worktree (`feat/transactions-index-pagination`, commit `37d3f8b`) |
-| GitHub CI | Moneta PR checks passed previously; Phase A PR CI/merge **not yet verified** |
+| Scope | Full test suite including Redis fault injection case study |
+| GitHub CI | All pre-merge checks passing on `main` |
 
 Earlier experiments and local-only research artifacts have separate test scopes. The latest count above must not be interpreted as including every private experimental test.
 
