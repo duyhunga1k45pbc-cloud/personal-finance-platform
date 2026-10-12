@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light" />
+  <title>Moneta — Personal Finance Platform Demo</title>
+  <style>
+    :root { --ink:#172438; --muted:#7c8799; --line:#e8ebf1; --bg:#f5f7fb; --navy:#14233e; --indigo:#5866db; --purple:#7767df; --teal:#13a58f; --red:#dd6679; --shadow:0 10px 35px rgba(17,34,58,.055); }
+    * {box-sizing:border-box} html {scroll-behavior:smooth} body{margin:0;color:var(--ink);background:var(--bg);font:14px/1.55 Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",sans-serif} button,input,select{font:inherit} button{cursor:pointer} a{color:inherit;text-decoration:none}
+    .app{display:grid;grid-template-columns:246px minmax(0,1fr);min-height:100vh}
+    .sidebar{background:var(--navy);color:#fff;padding:32px 16px 24px;position:sticky;top:0;height:100vh;overflow-y:auto;display:flex;flex-direction:column}
+    .logo{display:flex;align-items:center;gap:12px;padding:0 14px 33px;font-size:22px;font-weight:800;letter-spacing:-1.1px}
+    .logo-symbol{width:36px;height:36px;border-radius:12px;background:linear-gradient(135deg,#a9a4ff,#5d64e3);display:grid;place-items:center;font-size:22px;font-weight:800;color:white;box-shadow:0 7px 22px #7067ee55}
+    .menu-label{margin:0 12px 10px;font-size:10px;font-weight:800;letter-spacing:2px;color:#7c8daa;text-transform:uppercase}
+    .nav{display:flex;flex-direction:column;gap:5px}
+    .nav-item{width:100%;display:flex;align-items:center;gap:13px;padding:12px 14px;border:0;border-radius:11px;background:transparent;color:#adb8d0;text-align:left;font-weight:600;transition:.18s ease}
+    .nav-item svg{width:18px;height:18px;stroke-width:1.9;flex-shrink:0}
+    .nav-item:hover{color:white;background:#ffffff0d}.nav-item.active{color:#fff;background:#6173de35;box-shadow:inset 3px 0 0 #a5a8ff}
+    .sidebar-bottom{margin-top:auto;padding:18px 13px 0;border-top:1px solid #ffffff17}
+    .mini-user{display:flex;align-items:center;gap:11px}.avatar{height:35px;width:35px;border-radius:11px;background:#283f62;display:grid;place-items:center;font-weight:700;color:#dfdcff}
+    .sidebar-bottom small{color:#94a4be;font-size:11px}.sidebar-bottom strong{display:block;font-size:12px}
+    .workspace{min-width:0;padding:0 37px 42px;max-width:1720px;width:100%;margin:auto}
+    .topbar{height:81px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:14px}
+    .breadcrumb{font-size:12px;color:#8190a5}.breadcrumb strong{color:#2d3850;font-weight:650}
+    .top-right{display:flex;align-items:center;gap:14px}.demo-pill{display:inline-flex;align-items:center;gap:7px;color:#856925;background:#fff0c9;border:1px solid #ffde96;padding:5px 10px;border-radius:30px;font-size:11px;font-weight:700}
+    .demo-pill:before,.live-dot{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;background:#dea333}.date-text{font-size:12px;color:#8490a2}
+    .main{padding-top:30px}.screen{display:none}.screen.active{display:block;animation:fade .25s ease}@keyframes fade{from{opacity:.5;transform:translateY(4px)}to{opacity:1;transform:none}}
+    .page-intro{display:flex;justify-content:space-between;align-items:flex-start;gap:15px;margin-bottom:24px}.eyebrow{font-size:11px;font-weight:800;letter-spacing:1.45px;color:var(--indigo);text-transform:uppercase;margin-bottom:5px}
+    h1{font-size:29px;letter-spacing:-1.15px;margin:0 0 5px;line-height:1.25;font-weight:790}h2{font-size:17px;letter-spacing:-.45px;margin:0;font-weight:760}h3{font-size:14px;letter-spacing:-.25px;margin:0}p{margin:0}.subtle{color:var(--muted);font-size:13px}
+    .primary{border:0;background:var(--indigo);border-radius:11px;padding:11px 16px;color:white;font-weight:740;display:inline-flex;align-items:center;justify-content:center;gap:7px;box-shadow:0 5px 12px #6170d52e;white-space:nowrap}.primary:hover{background:#4655c3}.primary svg{width:16px;height:16px}
+    .secondary{border:1px solid #e0e5ee;background:white;border-radius:10px;padding:9px 13px;color:#485772;font-weight:650}.secondary:hover{background:#fafbff}
+    .kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px;margin-bottom:18px}.card{background:#fff;border:1px solid #eceef4;border-radius:17px;box-shadow:var(--shadow);min-width:0}
+    .kpi{padding:20px 21px 18px;min-height:140px}.kpi-top{display:flex;align-items:center;justify-content:space-between;gap:8px}.kpi-title{font-size:12px;color:#79879b;font-weight:650}.kpi-icon{border-radius:11px;width:34px;height:34px;display:grid;place-items:center;background:#eff1ff;color:#7070d8}.kpi-icon svg{width:18px;height:18px}.kpi-icon.green{background:#eaf9f5;color:#21a78d}.kpi-icon.red{background:#fff0f2;color:#d4667d}.kpi-value{font-size:25px;letter-spacing:-1.1px;font-weight:790;margin:11px 0 5px;white-space:nowrap}.kpi-foot{font-size:11px;color:#91a0b2}.positive{color:#0f9f83}.negative{color:#d85772}
+    .two-cols{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(285px,.95fr);gap:18px;margin-bottom:18px}.card-header{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:22px 23px 0}.card-body{padding:18px 23px 22px}.chart-panel{min-height:320px}.chart-headline{display:flex;align-items:baseline;gap:11px;margin-top:14px}.chart-headline strong{font-size:24px;letter-spacing:-.8px}.trend{background:#e7f8f3;color:#11957a;border-radius:20px;font-size:11px;font-weight:780;padding:2px 8px}.svg-chart{width:100%;height:190px;display:block;margin-top:8px}.chart-axis{display:flex;justify-content:space-between;color:#94a0b0;font-size:11px;padding:0 4px}
+    .breakdown{display:flex;justify-content:space-around;align-items:center;gap:18px;padding-top:20px}.donut{width:174px;aspect-ratio:1;border-radius:50%;background:conic-gradient(#636bde 0 55%,#2fc4b1 55% 83%,#f4b867 83% 100%);display:grid;place-items:center;transform:rotate(-90deg);flex-shrink:0}.donut-hole{height:122px;width:122px;border-radius:50%;background:white;display:flex;flex-direction:column;align-items:center;justify-content:center;transform:rotate(90deg)}.donut-hole b{font-size:17px}.donut-hole span{font-size:10px;color:var(--muted)}.legend{display:grid;gap:16px}.legend-entry{display:flex;align-items:flex-start;gap:9px}.legend-dot{height:9px;width:9px;border-radius:3px;margin-top:5px;flex-shrink:0}.legend b{display:block;font-size:12px}.legend small{font-size:11px;color:var(--muted)}
+    .table-card{overflow:hidden}.table-tools{display:flex;align-items:center;gap:10px;padding:17px 22px 17px;justify-content:space-between}.table-wrap{overflow:auto}.table{width:100%;border-collapse:collapse;text-align:left;white-space:nowrap}.table thead{background:#fafbfe}.table th{font-size:10px;letter-spacing:.8px;text-transform:uppercase;font-weight:750;color:#99a4b5;padding:13px 22px}.table td{padding:15px 22px;font-size:12px;border-top:1px solid #f0f2f6}.table tr[tabindex]{cursor:pointer}.table tbody tr:hover{background:#fafbff}.tx-name{display:flex;align-items:center;gap:11px}.tx-symbol{width:33px;height:33px;border-radius:10px;background:#f0f2fa;color:#626d91;display:grid;place-items:center;font-size:14px;font-weight:700}.tx-name strong{font-size:12px;display:block;font-weight:760}.tx-name small{display:block;color:#9da7b6;font-size:10px}.money{font-weight:780;font-variant-numeric:tabular-nums}.tag{font-size:10px;font-weight:750;padding:4px 9px;border-radius:20px;background:#eef1fa;color:#66718a;display:inline-block}.tag.green{color:#159278;background:#e8f9f4}.tag.yellow{color:#aa8127;background:#fff5d9}.tag.purple{color:#7259ad;background:#f2edff}.link-button{background:none;border:0;color:var(--indigo);font-size:12px;font-weight:700;padding:0}
+    .toolbar{display:flex;gap:10px;flex-wrap:wrap}.search,.filter{min-height:40px;border:1px solid #e3e7f0;border-radius:10px;background:#fff;color:#58647a;padding:0 13px;outline:none}.search:focus,.filter:focus,input:focus,select:focus{border-color:#8d99f1;box-shadow:0 0 0 3px #6f77d51b}.search{min-width:250px;width:310px;max-width:100%}.filter{min-width:140px}
+    .accounts-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:17px}.account{padding:21px}.account-top{display:flex;justify-content:space-between;align-items:center}.account-brand{width:41px;height:41px;border-radius:13px;display:grid;place-items:center;color:#fff;font-weight:800;font-size:13px}.account .type{font-size:11px;color:#8693a5;margin-top:16px}.account strong.balance{font-size:23px;letter-spacing:-.8px;display:block;margin:4px 0}.account .ref{font-size:11px;color:#9aa6b5}.account-rule{height:1px;background:#edf0f6;margin:18px 0 13px}.account-status{font-size:11px;color:#168d76;font-weight:700;display:flex;gap:5px;align-items:center}.account-status::before{content:"";background:#15b28f;width:6px;height:6px;border-radius:50%}
+    .reco-list{display:grid;gap:14px}.reco-item{padding:20px 22px;display:grid;grid-template-columns:1.2fr 1fr 1fr auto;gap:14px;align-items:center}.reco-cell label{font-size:11px;color:#99a4b4;display:block}.reco-cell strong{font-size:14px;display:block;margin-top:4px}.notice{padding:15px 19px;background:#f0f3ff;border:1px solid #e0e6ff;border-radius:13px;margin-bottom:20px;font-size:12px;color:#46547c}.notice strong{color:#303c69}.engineering-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:17px}.tech-card{padding:24px}.tech-number{display:inline-grid;place-items:center;border-radius:10px;background:#f0f1ff;color:#5c65bb;font-size:12px;font-weight:800;width:37px;height:37px;margin-bottom:13px}.tech-card p{color:#7a879b;font-size:12px;margin-top:10px;line-height:1.8}
+    .empty{padding:35px;text-align:center;color:#8e9bad}.sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+    .overlay{position:fixed;inset:0;background:#14213c8a;z-index:20;display:none;align-items:flex-start;justify-content:center;padding:18px;overflow-y:auto}.overlay.open{display:flex}.modal{width:100%;max-width:500px;margin:auto;background:#fff;border-radius:19px;box-shadow:0 23px 80px #06102645;padding:25px}.modal-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px}.icon-button{width:30px;height:30px;border:0;background:#f0f3f9;border-radius:9px;font-size:18px;color:#7d899a}.form-grid{display:grid;gap:14px}.field{display:grid;gap:6px}.field label{font-size:11px;font-weight:700;color:#5b667c}.field input,.field select{width:100%;height:41px;border:1px solid #e4e7ef;border-radius:9px;padding:0 12px;background:#fff;outline:0}.modal-actions{display:flex;justify-content:flex-end;gap:9px;margin-top:23px}.help{color:#8b97a9;font-size:11px}.detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.detail-block{padding:12px;border-radius:10px;background:#f6f8fc;min-width:0}.detail-block small{display:block;color:#8c99ac;font-size:10px}.detail-block strong{display:block;margin-top:4px;font-size:12px;overflow-wrap:anywhere}.detail-amount{font-size:27px;font-weight:800;letter-spacing:-1px;margin-bottom:13px}
+    .toast{position:fixed;right:25px;bottom:22px;padding:13px 18px;border-radius:12px;background:#1a2944;color:white;z-index:40;font-size:12px;box-shadow:0 12px 30px #07122640;display:none}.toast.show{display:block}
+    @media(max-width:1180px){.kpis{grid-template-columns:repeat(2,1fr)}.two-cols{grid-template-columns:1fr}.accounts-grid{grid-template-columns:repeat(2,1fr)}}
+    @media(max-width:760px){.app{display:block}.sidebar{height:auto;position:relative;padding:12px 14px}.logo{padding:3px 0 14px;font-size:19px}.menu-label,.mini-user{display:none}.sidebar-bottom{margin:0;padding:8px 0 0;display:flex;align-items:center;justify-content:space-between;gap:10px;border-top:0}.sidebar-bottom #who{margin:0!important}.sidebar-bottom #logout-btn{margin:0!important;white-space:nowrap}.nav{display:flex;flex-direction:row;overflow:auto;gap:5px;padding-bottom:3px}.nav-item{min-width:max-content;padding:9px 12px;font-size:12px}.nav-item svg{width:14px;height:14px}.workspace{padding:0 15px 32px}.topbar{height:64px}.date-text{display:none}.main{padding-top:23px}.page-intro{flex-direction:column}h1{font-size:25px}.kpis{gap:10px}.kpi{padding:15px;min-height:123px}.kpi-value{font-size:20px}.card-header{padding:19px 17px 0}.card-body{padding:16px}.breakdown{flex-wrap:wrap}.accounts-grid{grid-template-columns:1fr}.engineering-grid{grid-template-columns:1fr}.reco-item{grid-template-columns:1fr 1fr}.table-tools{flex-direction:column;align-items:stretch}.search{width:100%}.topbar .breadcrumb{display:none}}
+    @media(max-width:420px){.kpis{grid-template-columns:1fr 1fr}.kpi-value{font-size:18px}.kpi-icon{width:27px;height:27px}.reco-item{grid-template-columns:1fr}.demo-pill{font-size:10px}}
+  </style>
+</head>
+<body>
+  <svg aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden" xmlns="http://www.w3.org/2000/svg">
+    <symbol id="ic-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></symbol>
+    <symbol id="ic-wallet" viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="15" rx="3"/><path d="M3 9V6a3 3 0 0 1 3-3h12"/><path d="M16 14h5"/></symbol>
+    <symbol id="ic-arrow" viewBox="0 0 24 24"><path d="M7 7h14m0 0-4-4m4 4-4 4M17 17H3m0 0 4 4m-4-4 4-4"/></symbol>
+    <symbol id="ic-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></symbol>
+    <symbol id="ic-layers" viewBox="0 0 24 24"><path d="m12 3 9 5-9 5-9-5 9-5Zm-9 10 9 5 9-5M3 18l9 5 9-5"/></symbol>
+    <symbol id="ic-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="ic-trend" viewBox="0 0 24 24"><path d="m3 17 7-7 4 4 7-9m-7 0h7v7"/></symbol>
+    <symbol id="ic-down" viewBox="0 0 24 24"><path d="M12 3v17m0 0-6-6m6 6 6-6"/></symbol>
+    <symbol id="ic-up" viewBox="0 0 24 24"><path d="M12 21V4m0 0L6 10m6-6 6 6"/></symbol>
+    <symbol id="ic-shield" viewBox="0 0 24 24"><path d="m12 2 9 4v6c0 6-4 9-9 11-5-2-9-5-9-11V6l9-4Z"/><path d="m8 12 3 3 5-6"/></symbol>
+  </svg>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="logo"><span class="logo-symbol">M</span>moneta<span style="color:#9d9cfa">.</span></div>
+      <div class="menu-label">Workspace</div>
+      <nav class="nav" aria-label="Điều hướng">
+        <button class="nav-item active" data-screen="overview"><svg fill="none" stroke="currentColor"><use href="#ic-grid"/></svg> Tổng quan</button>
+        <button class="nav-item" data-screen="transactions"><svg fill="none" stroke="currentColor"><use href="#ic-arrow"/></svg> Giao dịch</button>
+        <button class="nav-item" data-screen="accounts"><svg fill="none" stroke="currentColor"><use href="#ic-wallet"/></svg> Tài khoản</button>
+        <button class="nav-item" data-screen="reconciliation"><svg fill="none" stroke="currentColor"><use href="#ic-check"/></svg> Đối soát</button>
+        <button class="nav-item" data-screen="architecture"><svg fill="none" stroke="currentColor"><use href="#ic-layers"/></svg> Engineering</button>
+      </nav>
+      <div class="sidebar-bottom"><div class="mini-user"><div class="avatar">PF</div><div><strong>Portfolio Demo</strong><small>Personal Finance Platform</small></div></div><div id="who" style="font-size:10px;color:#8193b0;margin-top:14px;word-break:break-all">Chưa đăng nhập</div><button id="logout-btn" class="link-button" style="color:#adb8d0;margin-top:8px">Đăng xuất</button></div>
+    </aside>
+    <div class="workspace">
+      <header class="topbar"><div class="breadcrumb">Personal Finance Platform <span style="padding:0 9px;color:#bec7d3">/</span> <strong id="breadcrumb-page">Tổng quan</strong></div><div class="top-right"><span class="date-text">Dữ liệu từ backend</span><span class="demo-pill">DEMO</span></div></header>
+      <main class="main">
+        <section class="screen active" id="screen-overview">
+          <div class="page-intro"><div><div class="eyebrow">Financial clarity</div><h1>Tài chính của bạn, rõ ràng hơn.</h1><p class="subtle">Một góc nhìn nhất quán về số dư, giao dịch và lịch sử tài chính.</p></div></div>
+          <div class="kpis" id="kpi-grid"></div>
+          <div class="two-cols">
+            <article class="card chart-panel"><div class="card-header"><div><h2>Số dư</h2><p class="subtle">Thu nhập và chi tiêu · GET /summary</p></div></div><div class="card-body"><div class="chart-headline"><strong id="chart-current"></strong></div><svg class="svg-chart" id="trend-chart" viewBox="0 0 700 210" preserveAspectRatio="none" role="img" aria-label="So sánh thu nhập và chi tiêu"></svg><div class="chart-axis"><span>Thu nhập</span><span>Chi tiêu</span></div></div></article>
+            <article class="card"><div class="card-header"><div><h2>Tài khoản</h2><p class="subtle">GET /accounts</p></div></div><div class="card-body"><div class="legend" id="acct-legend"></div></div></article>
+          </div>
+          <article class="card table-card"><div class="card-header"><div><h2>Giao dịch gần đây</h2><p class="subtle">Canonical financial events · nhấn vào dòng để xem chi tiết</p></div><button class="link-button" data-go="transactions">Xem tất cả →</button></div><div class="table-wrap" style="margin-top:15px"><table class="table"><thead><tr><th>Giao dịch</th><th>Loại</th><th>Ngày</th><th>Trạng thái</th><th style="text-align:right">Số tiền</th></tr></thead><tbody id="recent-body"></tbody></table></div></article>
+        </section>
+        <section class="screen" id="screen-transactions"><div class="page-intro"><div><div class="eyebrow">Canonical ledger</div><h1>Lịch sử giao dịch</h1><p class="subtle">Phân biệt thu nhập, chi tiêu, chuyển khoản, hoàn tiền và bằng chứng giao dịch.</p></div></div><div class="card table-card"><div class="table-tools"><div class="toolbar"><input class="search" id="tx-search" placeholder="Tìm mô tả, danh mục hoặc mã..." aria-label="Tìm giao dịch"/><select class="filter" id="tx-type" aria-label="Lọc giao dịch"><option value="all">Tất cả loại</option><option value="income">Thu nhập</option><option value="expense">Chi tiêu</option></select></div><small class="subtle" id="tx-count"></small></div><div class="table-wrap"><table class="table"><thead><tr><th>Giao dịch</th><th>Loại</th><th>Tài khoản</th><th>Ngày</th><th>Trạng thái</th><th style="text-align:right">Số tiền</th></tr></thead><tbody id="transactions-body"></tbody></table></div></div></section>
+        <section class="screen" id="screen-accounts"><div class="page-intro"><div><div class="eyebrow">Financial accounts</div><h1>Tài khoản tài chính</h1><p class="subtle">Danh sách tài khoản của bạn. Số dư chỉ hiển thị khi projection số dư đã được dựng.</p></div></div><div class="accounts-grid" id="accounts-grid"></div><div class="notice" style="margin-top:20px"><strong>Data model:</strong> Một giao dịch chuyển khoản thay đổi hai tài khoản nhưng không tự làm thay đổi net worth. Số dư lấy từ projection, không tự tính ở giao diện.</div></section>
+        <section class="screen" id="screen-reconciliation"><div class="page-intro"><div><div class="eyebrow">Correctness first</div><h1>Đối soát tài khoản</h1><p class="subtle">So sánh trạng thái kỳ vọng và quan sát được. Sai lệch được hiển thị tường minh.</p></div></div><div class="notice"><strong>Nguyên tắc:</strong> Không tự tạo adjustment khi xuất hiện mismatch. Mọi điều chỉnh cần được xác nhận và ghi nhận thành financial event. Màn hình này chỉ đọc; API hiện chưa có danh sách đối soát nên tra cứu theo mã.</div><form id="reco-form" style="display:flex;gap:10px;margin:16px 0"><input class="search" id="reco-id" type="number" min="1" placeholder="Mã đối soát" aria-label="Mã đối soát"/><button class="primary" type="submit">Xem</button></form><div class="reco-list" id="reco-result"></div></section>
+        <section class="screen" id="screen-architecture"><div class="page-intro"><div><div class="eyebrow">Portfolio case study</div><h1>Điều nằm phía sau giao diện</h1><p class="subtle">Các quy tắc thực tế cần được thực thi và kiểm thử ở backend.</p></div></div><div class="engineering-grid"><div class="card tech-card"><span class="tech-number">01</span><h2>Canonical financial state</h2><p>Phân biệt evidence bên ngoài, cách diễn giải nghiệp vụ và trạng thái tài chính chuẩn. UI hiển thị một góc nhìn, không phải nguồn dữ liệu có thẩm quyền.</p></div><div class="card tech-card"><span class="tech-number">02</span><h2>Idempotency & concurrency</h2><p>Backend chịu trách nhiệm chống xử lý lặp, phối hợp concurrent mutations và giữ invariants. Các nút trong demo này không gửi lệnh đến backend.</p></div><div class="card tech-card"><span class="tech-number">03</span><h2>Append-only history</h2><p>Lịch sử thay đổi cách diễn giải phải có thể truy vết, không âm thầm ghi đè xác nhận trước đó. Chi tiết sự kiện minh họa mô hình thời gian nghiệp vụ.</p></div><div class="card tech-card"><span class="tech-number">04</span><h2>Reconciliation</h2><p>Sai lệch giữa expected và observed được hiển thị công khai; thao tác điều chỉnh cần xác nhận, kiểm tra quyền và tạo sự kiện ở backend.</p></div></div></section>
+      </main>
+    </div>
+  </div>
+    <div class="overlay open" id="login-modal" role="dialog" aria-modal="true" aria-labelledby="login-title"><div class="modal"><div class="modal-head"><div><div class="eyebrow">Personal Finance Platform</div><h2 id="login-title">Đăng nhập</h2></div></div><form id="login-form"><div class="form-grid"><div class="field"><label for="login-email">Email</label><input id="login-email" type="email" autocomplete="username" required/></div><div class="field"><label for="login-password">Mật khẩu</label><input id="login-password" type="password" autocomplete="current-password" required/></div></div><div id="login-error" role="alert" style="color:#d25a72;margin:10px 0;min-height:18px"></div><div class="modal-actions"><button class="primary" id="login-submit" type="submit">Đăng nhập</button></div></form></div></div>
+  <div class="overlay" id="detail-modal" role="dialog" aria-modal="true" aria-labelledby="detail-title"><div class="modal"><div class="modal-head"><div><div class="eyebrow">Event detail · illustrative</div><h2 id="detail-title">Chi tiết financial event</h2></div><button class="icon-button" data-close aria-label="Đóng">×</button></div><div id="detail-content"></div><div class="modal-actions"><button class="secondary" data-close>Đóng</button></div></div></div>
+  <div class="toast" id="toast" role="status"></div>
+  <script>
+    'use strict';
+    // Live demo: every figure comes from the FastAPI backend. The token lives in memory only.
+    let token = null;
+    let accounts = [];
+    let transactions = [];
+    let txTotal = 0;
+    let summary = null;
+    let balances = null; // account_id -> balance, only when a fresh projection exists
+    const money = n => new Intl.NumberFormat('vi-VN').format(n)+' ₫';
+    const formatDate = d => { const v = new Date(d); return isNaN(v) ? '—' : v.toLocaleDateString('vi-VN',{day:'2-digit',month:'2-digit',year:'numeric'}); };
+    const escapeHtml = s => String(s ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    const $ = id => document.getElementById(id);
+    const labels = {income:'Thu nhập',expense:'Chi tiêu'};
+    const icons = {income:'↙',expense:'↗'};
+    const state = (cls, msg) => `<div class="${cls}" role="status">${escapeHtml(msg)}</div>`;
+
+    class ApiError extends Error { constructor(status, detail){ super(detail); this.status = status; } }
+    async function api(path, opts = {}) {
+      const headers = {...(opts.headers||{})};
+      if (token) headers.Authorization = 'Bearer ' + token;
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 15000);
+      try {
+        const res = await fetch(path, {...opts, headers, signal: ctrl.signal});
+        let body = null;
+        try { body = await res.json(); } catch (_) {}
+        if (res.status === 401 && token) { logout('Phiên đăng nhập đã hết hạn.'); }
+        if (!res.ok) {
+          const d = body && body.detail;
+          throw new ApiError(res.status, typeof d === 'string' ? d : 'Yêu cầu thất bại (' + res.status + ')');
+        }
+        return body;
+      } catch (e) {
+        if (e instanceof ApiError) throw e;
+        throw new ApiError(0, e.name === 'AbortError' ? 'Hết thời gian chờ máy chủ.' : 'Không kết nối được máy chủ.');
+      } finally { clearTimeout(timer); }
+    }
+
+    let currentScreen = 'overview';
+    function goto(screen){ currentScreen=screen; document.querySelectorAll('.screen').forEach(e=>e.classList.toggle('active',e.id==='screen-'+screen));document.querySelectorAll('.nav-item').forEach(e=>e.classList.toggle('active',e.dataset.screen===screen));const titles={overview:'Tổng quan',transactions:'Giao dịch',accounts:'Tài khoản',reconciliation:'Đối soát',architecture:'Engineering'};$('breadcrumb-page').textContent=titles[screen];window.scrollTo({top:0,behavior:'smooth'}); }
+    function kpi(title,value,foot,icon,cls=''){return `<div class="card kpi"><div class="kpi-top"><span class="kpi-title">${escapeHtml(title)}</span><span class="kpi-icon ${cls}"><svg fill="none" stroke="currentColor"><use href="#ic-${icon}"/></svg></span></div><div class="kpi-value">${escapeHtml(value)}</div><div class="kpi-foot">${escapeHtml(foot)}</div></div>`}
+
+    function renderKpis(){
+      $('kpi-grid').innerHTML = kpi('Tổng thu nhập',money(summary.total_income),'GET /summary','up','green')
+        + kpi('Tổng chi tiêu',money(summary.total_expense),'GET /summary','down','red')
+        + kpi('Số dư',money(summary.balance),'Thu nhập − Chi tiêu','trend','green')
+        + kpi('Tài khoản',String(accounts.length),'GET /accounts','wallet');
+      $('chart-current').textContent = money(summary.balance);
+      const max = Math.max(summary.total_income, summary.total_expense, 1);
+      const w = v => Math.round(v / max * 600);
+      $('trend-chart').innerHTML = `<rect x="26" y="50" width="${w(summary.total_income)}" height="34" rx="8" fill="#13a58f"/><rect x="26" y="120" width="${w(summary.total_expense)}" height="34" rx="8" fill="#dd6679"/>`;
+    }
+    function renderLegend(){
+      $('acct-legend').innerHTML = accounts.length
+        ? accounts.map(a=>`<div class="legend-entry"><span class="legend-dot" style="background:#636bde"></span><div><b>${escapeHtml(a.name)}</b><small>${escapeHtml(a.account_type)} · ${escapeHtml(a.currency)}</small></div></div>`).join('')
+        : state('empty','Chưa có tài khoản.');
+    }
+    function transactionRow(x,full=false){
+      const acc = accounts.find(a=>a.id===x.account_id);
+      const t = x.type === 'income' ? 'income' : 'expense';
+      const sign = t==='expense'?'-':'+';
+      const cls = t==='income'?'positive':'negative';
+      return `<tr tabindex="0" role="button" data-tx="${Number(x.id)}" aria-label="Xem giao dịch ${Number(x.id)}"><td><div class="tx-name"><span class="tx-symbol">${icons[t]}</span><span><strong>${escapeHtml(x.description||'(không mô tả)')}</strong><small>${escapeHtml(x.category||'Chưa phân loại')} · #${Number(x.id)}</small></span></div></td><td><span class="tag ${t==='income'?'green':''}">${labels[t]}</span></td>${full?`<td>${escapeHtml(acc?acc.name:'—')}</td>`:''}<td>${formatDate(x.date)}</td><td><span class="tag green">Đang hiệu lực</span></td><td style="text-align:right"><span class="money ${cls}">${sign}${money(x.amount)}</span></td></tr>`;
+    }
+    function renderTransactions(){
+      const cols = 5;
+      $('recent-body').innerHTML = transactions.length ? transactions.slice(0,5).map(x=>transactionRow(x)).join('') : `<tr><td colspan="${cols}" class="empty">Chưa có giao dịch nào.</td></tr>`;
+      const term = $('tx-search').value.trim().toLocaleLowerCase('vi');
+      const filtered = transactions.filter(x=>[x.description,x.category,String(x.id)].some(v=>String(v??'').toLocaleLowerCase('vi').includes(term)));
+      $('transactions-body').innerHTML = filtered.length ? filtered.map(x=>transactionRow(x,true)).join('') : `<tr><td colspan="6" class="empty">${transactions.length?'Không tìm thấy giao dịch phù hợp.':'Chưa có giao dịch nào.'}</td></tr>`;
+      $('tx-count').textContent = txTotal > transactions.length ? `${filtered.length} / ${txTotal} giao dịch (hiển thị ${transactions.length} mới nhất theo API)` : `${filtered.length} giao dịch`;
+    }
+    function renderAccounts(){
+      if (!accounts.length) { $('accounts-grid').innerHTML = state('empty','Chưa có tài khoản nào.'); return; }
+      $('accounts-grid').innerHTML = accounts.map(a=>{
+        const b = balances && balances.has(a.id) ? money(balances.get(a.id)) : '—';
+        return `<div class="card account"><div class="account-top"><span class="account-brand" style="background:#6571d9">${escapeHtml((a.name||'?').slice(0,2).toUpperCase())}</span><span class="tag">${escapeHtml(a.account_type)}</span></div><div class="type">${escapeHtml(a.name)}</div><strong class="balance">${b}</strong><div class="ref">${escapeHtml(a.currency)} &nbsp; #${Number(a.id)}${a.is_default?' · mặc định':''}</div><div class="account-rule"></div><div class="account-status">${balances?'Số dư theo projection':'Chưa có projection số dư'}</div></div>`;
+      }).join('');
+    }
+    function showDetail(id){
+      const x = transactions.find(t=>t.id===id); if(!x) return;
+      const acc = accounts.find(a=>a.id===x.account_id);
+      const t = x.type==='income'?'income':'expense';
+      $('detail-content').innerHTML = `<div class="detail-amount ${t==='expense'?'negative':'positive'}">${t==='expense'?'-':'+'}${money(x.amount)}</div><p style="font-weight:750;margin-bottom:13px">${escapeHtml(x.description||'(không mô tả)')} <span class="tag">${labels[t]}</span></p><div class="detail-grid"><div class="detail-block"><small>Mã giao dịch</small><strong>${Number(x.id)}</strong></div><div class="detail-block"><small>Tài khoản</small><strong>${escapeHtml(acc?acc.name:'—')}</strong></div><div class="detail-block"><small>Ngày</small><strong>${formatDate(x.date)}</strong></div><div class="detail-block"><small>Danh mục</small><strong>${escapeHtml(x.category||'—')}</strong></div></div>`;
+      openModal('detail-modal');
+    }
+    function openModal(id){$(id).classList.add('open')}
+    function closeModals(){document.querySelectorAll('.overlay').forEach(x=>{ if(x.id!=='login-modal') x.classList.remove('open'); })}
+
+    function setError(area, e){ return state('empty', 'Lỗi: ' + e.message); }
+    async function loadAll(){
+      $('kpi-grid').innerHTML = state('empty','Đang tải...');
+      $('accounts-grid').innerHTML = state('empty','Đang tải...');
+      $('recent-body').innerHTML = $('transactions-body').innerHTML = '<tr><td colspan="6" class="empty">Đang tải...</td></tr>';
+      const [acc, tx, sum, proj] = await Promise.allSettled([
+        api('/accounts'), api('/transactions?limit=100'), api('/summary'), api('/projections/accounts')
+      ]);
+      if (!token) return;
+      if (acc.status==='fulfilled') { accounts = acc.value; renderAccounts(); renderLegend(); }
+      else { accounts = []; $('accounts-grid').innerHTML = setError('accounts', acc.reason); $('acct-legend').innerHTML = setError('accounts', acc.reason); }
+      balances = proj.status==='fulfilled' ? new Map(proj.value.map(r=>[r.account_id, r.balance])) : null;
+      if (acc.status==='fulfilled') renderAccounts();
+      if (tx.status==='fulfilled') { transactions = tx.value.data; txTotal = tx.value.total; renderTransactions(); }
+      else { transactions = []; const m = `<tr><td colspan="6" class="empty">Lỗi: ${escapeHtml(tx.reason.message)}</td></tr>`; $('recent-body').innerHTML = $('transactions-body').innerHTML = m; $('tx-count').textContent=''; }
+      if (sum.status==='fulfilled') { summary = sum.value; renderKpis(); }
+      else { $('kpi-grid').innerHTML = setError('summary', sum.reason); }
+    }
+
+    function logout(message){
+      token = null; accounts = []; transactions = []; summary = null; balances = null;
+      ['kpi-grid','accounts-grid','recent-body','transactions-body','acct-legend','reco-result'].forEach(id=>$(id).innerHTML='');
+      $('login-error').textContent = message || '';
+      $('login-password').value = '';
+      $('who').textContent = 'Chưa đăng nhập';
+      $('login-modal').classList.add('open');
+    }
+    $('login-form').addEventListener('submit', async e=>{
+      e.preventDefault();
+      const btn = $('login-submit'); btn.disabled = true; $('login-error').textContent = '';
+      try {
+        const res = await api('/auth/login', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({email:$('login-email').value.trim(), password:$('login-password').value})});
+        token = res.access_token;
+        $('login-password').value = '';
+        $('who').textContent = $('login-email').value.trim();
+        $('login-modal').classList.remove('open');
+        await loadAll();
+      } catch (err) {
+        $('login-error').textContent = err.status === 401 ? 'Email hoặc mật khẩu không đúng.' : err.message;
+      } finally { btn.disabled = false; }
+    });
+    $('logout-btn').addEventListener('click', ()=>logout(''));
+    $('reco-form').addEventListener('submit', async e=>{
+      e.preventDefault();
+      const id = parseInt($('reco-id').value, 10);
+      if (!Number.isInteger(id) || id < 1) { $('reco-result').innerHTML = state('empty','Nhập mã đối soát hợp lệ.'); return; }
+      $('reco-result').innerHTML = state('empty','Đang tải...');
+      try {
+        const r = await api('/reconciliations/' + id);
+        const ok = r.status === 'RECONCILED' || r.status === 'RESOLVED';
+        $('reco-result').innerHTML = `<div class="card reco-item"><div class="reco-cell"><label>Tài khoản</label><strong>#${Number(r.account_id)}</strong></div><div class="reco-cell"><label>Expected</label><strong>${escapeHtml(r.expected_balance)}</strong></div><div class="reco-cell"><label>Observed</label><strong>${escapeHtml(r.observed_balance)}</strong><span style="font-size:11px">Chênh lệch: ${escapeHtml(r.difference)}</span></div><div><span class="tag ${ok?'green':'yellow'}">${escapeHtml(r.status)}</span></div></div>`;
+      } catch (err) { $('reco-result').innerHTML = state('empty', err.status === 404 ? 'Không tìm thấy đối soát.' : 'Lỗi: ' + err.message); }
+    });
+
+    document.querySelectorAll('[data-screen]').forEach(el=>el.addEventListener('click',()=>goto(el.dataset.screen)));
+    document.querySelectorAll('[data-go]').forEach(el=>el.addEventListener('click',()=>goto(el.dataset.go)));
+    document.querySelectorAll('[data-close]').forEach(el=>el.addEventListener('click',closeModals));
+    document.querySelectorAll('.overlay').forEach(el=>el.addEventListener('click',e=>{if(e.target===el)closeModals()}));
+    document.addEventListener('keydown',e=>{if(e.key==='Escape')closeModals();if((e.key==='Enter'||e.key===' ')&&e.target.matches('tr[data-tx]')){e.preventDefault();showDetail(Number(e.target.dataset.tx))}});
+    document.addEventListener('click',e=>{const row=e.target.closest('tr[data-tx]');if(row)showDetail(Number(row.dataset.tx))});
+    $('tx-search').addEventListener('input',renderTransactions);
+    $('tx-type').addEventListener('change', async ()=>{
+      const t = $('tx-type').value;
+      try {
+        const res = await api('/transactions?limit=100' + (t==='all' ? '' : '&type=' + t));
+        transactions = res.data; txTotal = res.total; renderTransactions();
+      } catch (err) { $('transactions-body').innerHTML = `<tr><td colspan="6" class="empty">Lỗi: ${escapeHtml(err.message)}</td></tr>`; }
+    });
+    logout('');
+  </script>
+</body>
+</html>

@@ -202,6 +202,7 @@ _ETX = "/provider-connections/{connection_id}/external-transactions"
 # tests/test_authorization_policy.py fails on undeclared or unguarded routes.
 ROUTE_POLICIES: dict[tuple[str, str], RoutePolicy] = {
     ("GET", "/"): _PUBLIC,
+    ("GET", "/demo"): _PUBLIC,
     ("GET", "/summary"): _owner(ResourceType.SUMMARY, Action.READ),
     ("POST", "/auth/register"): _PUBLIC,
     ("POST", "/auth/login"): _PUBLIC,

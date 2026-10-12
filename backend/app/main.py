@@ -1,7 +1,9 @@
 import logging
 import time
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, Request
+from fastapi.responses import FileResponse
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -133,6 +135,15 @@ def get_db():
 @app.get("/")
 def home():
     return {"message": "Chào mừng bạn đến với ứng dụng Quản lý Tài chính!"}
+
+
+_MONETA_HTML = Path(__file__).resolve().parent.parent / "static" / "moneta.html"
+
+
+@app.get("/demo", include_in_schema=False)
+def demo():
+    """Static Moneta UI. It carries no data; every API call it makes is authorized separately."""
+    return FileResponse(_MONETA_HTML, media_type="text/html; charset=utf-8", headers={"Cache-Control": "no-store"})
 
 
 @app.get("/summary", dependencies=[Depends(authorize_owner_principal)])
