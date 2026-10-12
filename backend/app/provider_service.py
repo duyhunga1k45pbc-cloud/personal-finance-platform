@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.authorization import Subject, owned
 from app.models import ExternalTransaction, ExternalTransactionEvidence, ProviderConnection, ProviderSyncCheckpoint
 
 
@@ -64,11 +65,8 @@ def get_owned_provider_connection(
     connection_id: int,
 ) -> ProviderConnection | None:
     return (
-        db.query(ProviderConnection)
-        .filter(
-            ProviderConnection.id == connection_id,
-            ProviderConnection.user_id == user_id,
-        )
+        owned(db.query(ProviderConnection), ProviderConnection.user_id, Subject(user_id))
+        .filter(ProviderConnection.id == connection_id)
         .one_or_none()
     )
 

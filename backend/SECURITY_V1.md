@@ -38,6 +38,32 @@ semantics or adding infrastructure without a failure-mode justification.
     reconciliation/projection tests and the V1 acceptance suite continue to
     prove cross-user isolation.
 
+## Authorization policy enforcement (`app/authorization.py`)
+
+Every HTTP operation has one entry in `ROUTE_POLICIES`, classified as
+`PUBLIC`, `OWNER` (authenticated, owner-scoped resource + action) or
+`METRICS_TOKEN`.
+
+- `enforce_declared_policy` (app-wide dependency) returns 403 for any HTTP
+  route with no entry.
+- `authorize_owner_route` (router-level dependency) authenticates through the
+  existing `get_current_user`, then requires *that route's own* policy to be
+  `OWNER` with a resource and action. It returns an `Authorized(subject,
+  policy)` that handlers can re-request at no cost (cached per request).
+- `authorize_object(authorized, resource, action, owner_id)` allows an object
+  only if the current route's policy declares exactly that resource and action
+  and the subject owns it. No other route's policy is consulted. It is applied
+  to account, transaction and provider-connection reads.
+- Object-level isolation is still enforced in SQL by `owned(...)` scopes and
+  the existing owner-filtered/locked queries; the policy layer is an
+  additional check, not a replacement.
+
+**Coverage boundary: HTTP `APIRoute` handlers only.** Mounted sub-apps,
+WebSocket routes and raw Starlette routes are not seen by these dependencies.
+They are prohibited rather than protected: `assert_only_policed_routes` runs at
+import and at process startup and raises if any such route exists. Adding one
+requires its own reviewed enforcement and an update to that inventory.
+
 ## Deliberate remaining production gates
 
 These are intentionally not faked with weak local mechanisms:
