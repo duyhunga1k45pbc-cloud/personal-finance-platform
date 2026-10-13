@@ -8,7 +8,7 @@ The backend implements financial event modeling, transaction and concurrency con
 
 **Project status:** Engineering portfolio and experimental application. Not production-deployed.
 
-**Quick navigation:** [Over-refund](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-preventing-concurrent-over-refunds) · [Redis revision cache](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-transaction-consistent-redis-caching) · [Redis fault injection](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-redis-fault-injection-and-invariant-verification) · [Connection pool RCA](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-connection-pool-starvation) · [Index & pagination](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-deterministic-pagination-and-postgresql-indexing) · [Moneta demo](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#moneta-demo-ui) · [Test results](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#test-results-and-coverage)
+**Quick navigation:** [Over-refund](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-preventing-concurrent-over-refunds) · [Redis revision cache](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-transaction-consistent-redis-caching) · [Connection pool RCA](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-connection-pool-starvation) · [Index & pagination](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-deterministic-pagination-and-postgresql-indexing) · [Moneta demo](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#moneta-demo-ui) · [Test results](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#test-results-and-coverage)
 
 ## Engineering Highlights
 
@@ -159,39 +159,6 @@ PostgreSQL and Redis integration tests cover rollback, savepoints, concurrent wr
 The design still makes PostgreSQL authorization/revision queries on a cache hit, serializes revision updates for the same connection, and retains older Redis keys until their TTLs expire. The provider listing still needs pagination for very large histories.
 
 **Implementation references:** `backend/app/listing_cache.py`, migration `k1b9c6d3f477`, `backend/tests/test_provider_listing_cache.py`, and `backend/tests/test_provider_listing_revision_concurrency.py`. The separate [fault-injection case study](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-redis-fault-injection-and-invariant-verification) evaluates the failure boundaries of this design.
-
----
-
-## Case Study: Redis Fault Injection and Invariant Verification
-
-The revisioned cache was designed to be optional: PostgreSQL remains the authoritative source for provider listings and financial writes, while Redis stores derived listing responses. The next question was whether **cache failures or concurrent requests could break freshness, ownership, or financial invariants** despite those boundaries.
-
-### Invariants Under Test
-
-- **Listing freshness:** A request beginning after a committed provider write must not select an older listing revision for that connection. An already-running request may still complete using the earlier snapshot it read.
-- **Tenant isolation:** A cache hit must not bypass the PostgreSQL ownership check for a provider connection.
-- **Financial correctness:** Redis unavailability must not permit duplicate financial effects or over-refunds; financial commands remain subject to PostgreSQL idempotency and locking.
-- **Graceful degradation:** Cache-read and cache-write failures should fall back to PostgreSQL for the listing endpoints that promise that behavior.
-
-### Controlled Failure Experiments
-
-| **Scenario**                                    | **Injected condition**                                                                                                                   | **Reported outcome**                                                                                                                            |
-| ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| **T1 — Stale cache fill**                       | Reader A loads revision `R`, pauses before its Redis write; another transaction commits revision `R+1`; Reader A then writes the old key | A later reader looks up `R+1` and receives the updated listing, rather than selecting `R`                                                       |
-| **T1 — Counterfactual**                         | Repeat the vulnerable interleaving with a key that omits revision                                                                        | The deliberately unversioned cache demonstrates a stale-fill failure; this is **not** a defect observed in the current versioned implementation |
-| **T2 — Redis outage and timeout**               | Raise connection/read/write errors; exercise the fallback and recovery paths                                                             | Listing responses fall back to PostgreSQL in the tested paths; errors and backoff are recorded                                                  |
-| **T3 — Cross-user access**                      | Interleave requests from distinct users and attempt another user's connection ID                                                         | PostgreSQL ownership validation rejects the request before consulting Redis                                                                     |
-| **T4 — Concurrent refunds during Redis outage** | Run conflicting refunds and same-key retries while Redis is unavailable                                                                  | Database locking and command receipts preserve the tested refund and idempotency invariants                                                     |
-
-T1 uses synchronization events to control the interleaving rather than relying on arbitrary sleeps. The counterfactual experiment is especially useful: it demonstrates **why the revision dimension matters**, without claiming that the deployed cache design exhibited that failure.
-
-### Verification Evidence
-
-The development-agent report records **15/15 focused integration tests passing**, **32/32 passing** when combined with the existing cache suite, and **328/328 passing** in the reported full local run against PostgreSQL and Redis. Results are documented in [`docs/REDIS_FAULT_INJECTION_CASE_STUDY.md`](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/blob/main/docs/REDIS_FAULT_INJECTION_CASE_STUDY.md); the implementation tests are in `backend/tests/test_redis_fault_injection_correctness.py`.
-
-**Outcome:** No violation of these selected invariants was reproduced in the current implementation under the tested failure conditions. This is **failure-oriented verification, not a new root-cause analysis of a production defect**. The concurrent refund outcome is expected because Redis is outside the financial write path.
-
-**Limitations:** The tests do not cover every possible scheduling interleaving, real infrastructure failures, or a compromised Redis instance serving a deliberately forged but well-formed payload. CRC32 framing detects accidental corruption, not malicious data substitution. The results are local and do not establish production readiness.
 
 ---
 
