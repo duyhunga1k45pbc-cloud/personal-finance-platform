@@ -4,34 +4,32 @@
 
 This project explores how financial state can remain consistent and recoverable when requests retry, concurrent operations conflict, transactions fail, external evidence disagrees, or execution conditions change.
 
-It started as a conventional income/expense CRUD application and evolved into a backend engineering project focused on **business invariants, transaction boundaries, concurrency control, idempotency, recovery, and evidence-based verification**. Subsequent work investigated **cache consistency, authorization boundaries, database connection ownership, and performance measurement**, then exercised those mechanisms through deterministic failure injection.
-
-Rather than optimizing for feature count, the project emphasizes understanding failure modes, implementing explicit correctness guarantees, and testing those guarantees against real PostgreSQL behavior.
+The backend implements financial event modeling, transaction and concurrency controls, idempotent commands, reconciliation, recovery tooling, authorization, and optional Redis caching. The repository includes PostgreSQL-backed integration tests, failure-injection scenarios, and performance measurements for selected operations.
 
 **Project status:** Engineering portfolio and experimental application. Not production-deployed.
 
-**Quick navigation:** [Over-refund](#case-study-preventing-concurrent-over-refunds) · [Redis revision cache](#case-study-transaction-consistent-redis-caching) · [Redis fault injection](#case-study-redis-fault-injection-and-invariant-verification) · [Connection pool RCA](#case-study-connection-pool-starvation) · [Index & pagination](#case-study-deterministic-pagination-and-postgresql-indexing) · [Moneta demo](#moneta-demo-ui) · [Verification](#verification-strategy)
+**Quick navigation:** [Over-refund](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-preventing-concurrent-over-refunds) · [Redis revision cache](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-transaction-consistent-redis-caching) · [Redis fault injection](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-redis-fault-injection-and-invariant-verification) · [Connection pool RCA](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-connection-pool-starvation) · [Index & pagination](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-deterministic-pagination-and-postgresql-indexing) · [Moneta demo](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#moneta-demo-ui) · [Test results](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#test-results-and-coverage)
 
 ## Engineering Highlights
 
-| Area | Implemented and verified behavior |
-|---|---|
-| Financial domain modeling | Canonical financial events, signed entries, transfers, refunds, reversals, and corrections |
-| Concurrency control | PostgreSQL row locking, expected-version guards, deterministic conflicting transactions |
-| Transactional idempotency | Database-backed command receipts, retry recovery, concurrent same-key replay |
-| Historical integrity | Append-only financial history and causal event relationships |
-| Reconciliation | Explicit handling of conflicting and incomplete external evidence |
-| Recovery | Rebuildable projections, canonical-state audits, backup/restore exercises |
-| Failure injection | Commit acknowledgment loss, worker termination, deadlocks, connection-pool exhaustion, Redis failures and deterministic stale-cache races |
-| Security | JWT authentication, declared route policies, SQL ownership scoping, short-lived auth sessions |
-| Schema evolution | Alembic migrations, rollback verification, historical backfill, revision compatibility checks |
-| Async correctness | SQLAlchemy AsyncSession, cancellation, connection lifecycle, native-async experiments |
-| Cache correctness | PostgreSQL-revisioned Redis keys, ownership-before-cache checks, 15 reported fault-injection tests including a vulnerable counterfactual |
-| Read performance | N+1 removal, PostgreSQL-revisioned Redis cache, query-plan analysis and controlled benchmarks |
-| Query correctness | Deterministic transaction pagination and a measured composite-index optimization (merged to `main` in PR #6 on 2026-10-12) |
-| Demo | Moneta read-only web interface over existing authenticated FastAPI APIs |
+| **Area**                  | **Implemented and verified behavior**                                                                                                     |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| Financial domain modeling | Canonical financial events, signed entries, transfers, refunds, reversals, and corrections                                                |
+| Concurrency control       | PostgreSQL row locking, expected-version guards, deterministic conflicting transactions                                                   |
+| Transactional idempotency | Database-backed command receipts, retry recovery, concurrent same-key replay                                                              |
+| Historical integrity      | Append-only financial history and causal event relationships                                                                              |
+| Reconciliation            | Explicit handling of conflicting and incomplete external evidence                                                                         |
+| Recovery                  | Rebuildable projections, canonical-state audits, backup/restore exercises                                                                 |
+| Failure injection         | Commit acknowledgment loss, worker termination, deadlocks, connection-pool exhaustion, Redis failures and deterministic stale-cache races |
+| Security                  | JWT authentication, declared route policies, SQL ownership scoping, short-lived auth sessions                                             |
+| Schema evolution          | Alembic migrations, rollback verification, historical backfill, revision compatibility checks                                             |
+| Async correctness         | SQLAlchemy AsyncSession, cancellation, connection lifecycle, native-async experiments                                                     |
+| Cache correctness         | PostgreSQL-revisioned Redis keys, ownership-before-cache checks, 15 reported fault-injection tests including a vulnerable counterfactual  |
+| Read performance          | N+1 removal, PostgreSQL-revisioned Redis cache, query-plan analysis and controlled benchmarks                                             |
+| Query correctness         | Deterministic transaction pagination and a measured composite-index optimization (merged to `main` in PR #6 on 2026-10-12)                |
+| Demo                      | Moneta read-only web interface over existing authenticated FastAPI APIs                                                                   |
 
-**Latest reported local regression:** **328 passed, 0 failed, 0 skipped**, using PostgreSQL and real Redis integration tests. This includes **15 newly reported Redis fault-injection tests** in `backend/tests/test_redis_fault_injection_correctness.py`. These are agent-reported local execution results, not independent verification or a claim about the latest GitHub Actions run; see [Verification Strategy](#verification-strategy).
+**Latest reported local regression:** **328 passed, 0 failed, 0 skipped**, using PostgreSQL and real Redis integration tests. This includes **15 newly reported Redis fault-injection tests** in `backend/tests/test_redis_fault_injection_correctness.py`. These are agent-reported local execution results, not independent verification or a claim about the latest GitHub Actions run; see [Test Results and Coverage](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#test-results-and-coverage).
 
 The verification applies to the scenarios exercised by the tests. It does not establish exhaustive correctness or production readiness.
 
@@ -109,7 +107,7 @@ The tests confirm:
 - Competing refund and reversal commands respect the shared serialization boundary.
 - Relevant canonical records, causal links, historical records, and audit state remain consistent in the tested scenarios.
 
-The original fix was verified using a targeted PostgreSQL regression suite. Later repository-wide test counts refer to different code revisions and collection scopes; see [Verification Strategy](#verification-strategy).
+The original fix was verified using a targeted PostgreSQL regression suite; current reported regression results appear in [Test Results and Coverage](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#test-results-and-coverage).
 
 **Implementation references:**
 
@@ -135,7 +133,7 @@ An invalidation sequence such as `COMMIT` followed by `Redis DEL` contains a cra
 
 Each provider connection has a **listing revision stored in PostgreSQL**. Database triggers advance it in the **same transaction** as inserts into provider transactions or evidence. A rollback rolls back the revision as well.
 
-```text
+```
 Provider writer transaction
   +-- Insert transaction / evidence
   +-- Advance PostgreSQL listing revision
@@ -149,6 +147,7 @@ Authorized listing GET
        | HIT                       | MISS
        v                           v
   Return cached body      Query PostgreSQL and populate Redis
+
 ```
 
 An in-flight reader can repopulate an older revision key, but subsequent requests look up the newer revision. Redis outages fall back to PostgreSQL; **ownership verification takes place before Redis access**. The cache is optional and disabled without `REDIS_URL`.
@@ -159,7 +158,7 @@ PostgreSQL and Redis integration tests cover rollback, savepoints, concurrent wr
 
 The design still makes PostgreSQL authorization/revision queries on a cache hit, serializes revision updates for the same connection, and retains older Redis keys until their TTLs expire. The provider listing still needs pagination for very large histories.
 
-**Implementation references:** `backend/app/listing_cache.py`, migration `k1b9c6d3f477`, `backend/tests/test_provider_listing_cache.py`, and `backend/tests/test_provider_listing_revision_concurrency.py`. The separate [fault-injection case study](#case-study-redis-fault-injection-and-invariant-verification) evaluates the failure boundaries of this design.
+**Implementation references:** `backend/app/listing_cache.py`, migration `k1b9c6d3f477`, `backend/tests/test_provider_listing_cache.py`, and `backend/tests/test_provider_listing_revision_concurrency.py`. The separate [fault-injection case study](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-redis-fault-injection-and-invariant-verification) evaluates the failure boundaries of this design.
 
 ---
 
@@ -176,19 +175,19 @@ The revisioned cache was designed to be optional: PostgreSQL remains the authori
 
 ### Controlled Failure Experiments
 
-| Scenario | Injected condition | Reported outcome |
-|---|---|---|
-| **T1 — Stale cache fill** | Reader A loads revision `R`, pauses before its Redis write; another transaction commits revision `R+1`; Reader A then writes the old key | A later reader looks up `R+1` and receives the updated listing, rather than selecting `R` |
-| **T1 — Counterfactual** | Repeat the vulnerable interleaving with a key that omits revision | The deliberately unversioned cache demonstrates a stale-fill failure; this is **not** a defect observed in the current versioned implementation |
-| **T2 — Redis outage and timeout** | Raise connection/read/write errors; exercise the fallback and recovery paths | Listing responses fall back to PostgreSQL in the tested paths; errors and backoff are recorded |
-| **T3 — Cross-user access** | Interleave requests from distinct users and attempt another user's connection ID | PostgreSQL ownership validation rejects the request before consulting Redis |
-| **T4 — Concurrent refunds during Redis outage** | Run conflicting refunds and same-key retries while Redis is unavailable | Database locking and command receipts preserve the tested refund and idempotency invariants |
+| **Scenario**                                    | **Injected condition**                                                                                                                   | **Reported outcome**                                                                                                                            |
+| ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| **T1 — Stale cache fill**                       | Reader A loads revision `R`, pauses before its Redis write; another transaction commits revision `R+1`; Reader A then writes the old key | A later reader looks up `R+1` and receives the updated listing, rather than selecting `R`                                                       |
+| **T1 — Counterfactual**                         | Repeat the vulnerable interleaving with a key that omits revision                                                                        | The deliberately unversioned cache demonstrates a stale-fill failure; this is **not** a defect observed in the current versioned implementation |
+| **T2 — Redis outage and timeout**               | Raise connection/read/write errors; exercise the fallback and recovery paths                                                             | Listing responses fall back to PostgreSQL in the tested paths; errors and backoff are recorded                                                  |
+| **T3 — Cross-user access**                      | Interleave requests from distinct users and attempt another user's connection ID                                                         | PostgreSQL ownership validation rejects the request before consulting Redis                                                                     |
+| **T4 — Concurrent refunds during Redis outage** | Run conflicting refunds and same-key retries while Redis is unavailable                                                                  | Database locking and command receipts preserve the tested refund and idempotency invariants                                                     |
 
 T1 uses synchronization events to control the interleaving rather than relying on arbitrary sleeps. The counterfactual experiment is especially useful: it demonstrates **why the revision dimension matters**, without claiming that the deployed cache design exhibited that failure.
 
 ### Verification Evidence
 
-The development-agent report records **15/15 focused integration tests passing**, **32/32 passing** when combined with the existing cache suite, and **328/328 passing** in the reported full local run against PostgreSQL and Redis. Results are documented in [`docs/REDIS_FAULT_INJECTION_CASE_STUDY.md`](docs/REDIS_FAULT_INJECTION_CASE_STUDY.md); the implementation tests are in `backend/tests/test_redis_fault_injection_correctness.py`.
+The development-agent report records **15/15 focused integration tests passing**, **32/32 passing** when combined with the existing cache suite, and **328/328 passing** in the reported full local run against PostgreSQL and Redis. Results are documented in [`docs/REDIS_FAULT_INJECTION_CASE_STUDY.md`](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/blob/main/docs/REDIS_FAULT_INJECTION_CASE_STUDY.md); the implementation tests are in `backend/tests/test_redis_fault_injection_correctness.py`.
 
 **Outcome:** No violation of these selected invariants was reproduced in the current implementation under the tested failure conditions. This is **failure-oriented verification, not a new root-cause analysis of a production defect**. The concurrent refund outcome is expected because Redis is outside the financial write path.
 
@@ -206,10 +205,10 @@ At sufficiently high concurrency this produced **connection pool starvation**, n
 
 ### Evaluated Approaches
 
-| Approach | Observed result | Trade-off |
-|---|---|---|
-| Overlapping authentication and business sessions | Pool starvation under the tested load | Separate transactions but unnecessary simultaneous connections |
-| Single shared session | Removed observed pool exhaustion | Authentication and business share transaction lifecycle; business rollback can expire ORM user state |
+| **Approach**                                         | **Observed result**                           | **Trade-off**                                                                                                    |
+| ---------------------------------------------------- | --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| Overlapping authentication and business sessions     | Pool starvation under the tested load         | Separate transactions but unnecessary simultaneous connections                                                   |
+| Single shared session                                | Removed observed pool exhaustion              | Authentication and business share transaction lifecycle; business rollback can expire ORM user state             |
 | **Short-lived auth session + immutable `Principal`** | **Selected; no pool timeouts in tested runs** | Sequential connection checkouts with separate transaction boundaries; the pool may reuse one physical connection |
 
 The selected design validates the JWT, loads the user in a short-lived authentication session, copies the needed attributes to an immutable `Principal`, **closes the authentication session**, and only then opens the business session. Authorization consumes verified identity values rather than a live ORM `User` object.
@@ -236,7 +235,7 @@ Phase A defines a complete ordering contract using **`transactions.id ASC`**, wi
 
 The application filters the listing by `user_id` and now sorts by `id`:
 
-```sql
+```
 SELECT ...
 FROM transactions
 JOIN financial_events ON ...
@@ -253,18 +252,18 @@ The audit then evaluated a composite B-tree index on **`transactions(user_id, id
 
 Selected `EXPLAIN (ANALYZE, BUFFERS)` measurements from a synthetic PostgreSQL audit database containing about **498,000 transactions** (median of nine warm-cache runs):
 
-| Request/query component | Before index | After index |
-|---|---:|---:|
-| User with ~100 transactions, first page | 21.93 ms | 0.02 ms |
-| User with ~10,000 transactions, first page | 27.24 ms | 19.24 ms |
-| User with ~10,000 transactions, offset 5,000 | 36.77 ms | 20.80 ms |
-| User with ~100,000 transactions, offset 50,000 | 17.66 ms | 17.60 ms |
+| **Request/query component**                     | **Before index** | **After index** |
+| ----------------------------------------------- | ---------------- | --------------- |
+| User with \~100 transactions, first page        | 21.93 ms         | 0.02 ms         |
+| User with \~10,000 transactions, first page     | 27.24 ms         | 19.24 ms        |
+| User with \~10,000 transactions, offset 5,000   | 36.77 ms         | 20.80 ms        |
+| User with \~100,000 transactions, offset 50,000 | 17.66 ms         | 17.60 ms        |
 
 These are **SQL execution measurements**, not HTTP end-to-end latency, and performance varied with user cardinality and plan choice. The index occupied approximately **11 MB** on the seeded database; one insert experiment showed approximately **10% additional write time**. Large offsets and the `COUNT` join for very large users remain expensive.
 
 ### Verification and Scope
 
-Five new API pagination tests cover ordering, page boundaries, filters, authorization and ownership. They all passed, but **also passed when `ORDER BY` was temporarily removed** on the small test fixture; therefore, the separate large-dataset plan-change reproduction is the stronger evidence for the original non-determinism. Phase A's local regression reported **294 passed, 0 failed, 0 skipped** with PostgreSQL and Redis at commit `37d3f8b`. The change was subsequently **merged into `main` via PR #6 on 2026-10-12**. That merge does not, by itself, verify the CI status of the latest Redis-fault-injection revision.
+Five new API pagination tests cover ordering, page boundaries, filters, authorization and ownership. They all passed, but **also passed when `ORDER BY` was temporarily removed** on the small test fixture; therefore, the separate large-dataset plan-change reproduction is the stronger evidence for the original non-determinism. The change was **merged into `main` via PR #6 on 2026-10-12**. That merge does not, by itself, verify the CI status of the latest Redis-fault-injection revision.
 
 The same audit identified **four redundant non-unique indexes** whose key definitions overlap primary-key or unique-constraint indexes. They were **not removed in Phase A**. The associated database constraints remain in place; cleanup is deferred and would require its own reviewed migration.
 
@@ -280,19 +279,19 @@ Its design keeps financial business rules and transaction boundaries explicit wi
 
 The main responsibilities are separated into:
 
-| Component | Responsibility |
-|---|---|
-| FastAPI routers | HTTP request handling, authentication dependencies, validation, and responses |
-| Business services | Financial operations, domain invariants, causal rules, and transaction coordination |
-| Canonical financial state | Authoritative financial events, entries, and relationships |
-| Financial history | Persistent historical evidence of state changes |
-| Provider integration | External data ingestion, normalization, and reconciliation |
-| Derived projections | Rebuildable balances and financial summaries |
-| Operational mechanisms | Idempotency, readiness, migrations, auditing, and recovery |
+| **Component**             | **Responsibility**                                                                  |
+| ------------------------- | ----------------------------------------------------------------------------------- |
+| FastAPI routers           | HTTP request handling, authentication dependencies, validation, and responses       |
+| Business services         | Financial operations, domain invariants, causal rules, and transaction coordination |
+| Canonical financial state | Authoritative financial events, entries, and relationships                          |
+| Financial history         | Persistent historical evidence of state changes                                     |
+| Provider integration      | External data ingestion, normalization, and reconciliation                          |
+| Derived projections       | Rebuildable balances and financial summaries                                        |
+| Operational mechanisms    | Idempotency, readiness, migrations, auditing, and recovery                          |
 
 A simplified flow distinguishes external evidence from validated financial state:
 
-```text
+```
 External Provider Evidence                 Client Financial Commands (API)
              |                                         |
              v                                         |
@@ -320,6 +319,7 @@ External Provider Evidence                 Client Financial Commands (API)
                             v           v
                      Append-only    Rebuildable
                         History      Projections
+
 ```
 
 Normalization alone does **not** make provider observations authoritative financial events. Interpretation and validated transitions are distinct responsibilities; external evidence can also be reconciled against canonical records without being silently accepted. Client-initiated commands enter via FastAPI and must respect the same domain invariants and explicit transaction boundaries.
@@ -471,53 +471,41 @@ These protections do not establish zero-downtime or rolling-upgrade compatibilit
 
 ---
 
-## Verification Strategy
+## Test Results and Coverage
 
-The project follows a failure-oriented verification approach. Earlier **208-test**, **289-test** (Moneta worktree), and **294-test** (Phase A worktree) regressions used different code revisions or collection scopes. The newer **328-test** local report includes the Redis fault-injection work; these counts are not a direct quality or coverage metric.
-
-1. Identify the business behavior and its correctness invariant.
-2. Determine which transaction, concurrency, or execution conditions could violate it.
-3. Construct a reproducible scenario.
-4. Verify actual behavior against PostgreSQL where database semantics matter.
-5. Introduce or correct the protection mechanism.
-6. Rerun the scenario and relevant regression tests.
-7. Record the verified guarantee and its limitations.
-
-Tests are treated as evidence for defined claims, not proof that every possible system state has been explored.
+The repository includes unit, integration, concurrency, failure-injection, and end-to-end tests. Database-sensitive scenarios use PostgreSQL; optional cache tests include Redis integration. The reported outcomes apply only to the conditions exercised.
 
 ### Latest Reported Local Regression
 
-| Result | Value |
-|---|---|
-| Full local suite (reported) | **328 passed, 0 failed, 0 skipped** |
-| Redis fault-injection focus (reported) | **15 passed** |
-| Cache suites combined (reported) | **32 passed** |
-| Database | Disposable PostgreSQL migrated to Alembic head |
-| Cache tests | Real Redis integration included |
-| Source of results | Development-agent local execution report; not independently rerun for this README edit |
-| GitHub CI for the 328-test revision | **Not verified here**; check the commit-specific GitHub Actions run before claiming green CI |
-
-Earlier experiments and local-only research artifacts have separate test scopes. The latest count above must not be interpreted as including every private experimental test.
+| **Result**                             | **Value**                                                                                    |
+| -------------------------------------- | -------------------------------------------------------------------------------------------- |
+| Full local suite (reported)            | **328 passed, 0 failed, 0 skipped**                                                          |
+| Redis fault-injection focus (reported) | **15 passed**                                                                                |
+| Cache suites combined (reported)       | **32 passed**                                                                                |
+| Database                               | Disposable PostgreSQL migrated to Alembic head                                               |
+| Cache tests                            | Real Redis integration included                                                              |
+| Source of results                      | Development-agent local execution report; not independently rerun for this README edit       |
+| GitHub CI for the 328-test revision    | **Not verified here**; check the commit-specific GitHub Actions run before claiming green CI |
 
 The reported results were obtained in a local verification environment. They do not imply successful production deployment or universal coverage of runtime failure modes.
 
 ### Verification Coverage
 
-| Area | Selected scenarios |
-|---|---|
-| Financial semantics | Canonical events, entries, transfers, refunds, reversals, corrections |
-| Transaction correctness | Idempotent replay, competing commands, expected-version conflicts |
-| Concurrency | Row locking, lock contention, stale reads, refund/reversal exclusion |
-| Redis fault injection | Controlled stale-fill race, unversioned-key counterfactual, read/write failures, fallback, cross-user isolation |
-| Provider integration | Evidence handling, lifecycle state, checkpoints, reconciliation |
-| Derived state | Projection rebuilding and canonical consistency |
-| Security | JWT validation, ownership, cross-user authorization |
-| Runtime failures | Response loss, worker termination, pool exhaustion, deadlocks |
-| Recovery | Backup/restore, projection reconstruction, canonical audits |
-| Deployment | Preflight checks, revision compatibility, readiness, graceful shutdown |
-| Schema evolution | Rollback, historical backfill invariants, incompatible revisions |
-| Async execution | AsyncSession behavior, cancellation, session ownership, lock contention |
-| Middleware | Cancellation propagation and request-context isolation |
+| **Area**                | **Selected scenarios**                                                                                          |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------- |
+| Financial semantics     | Canonical events, entries, transfers, refunds, reversals, corrections                                           |
+| Transaction correctness | Idempotent replay, competing commands, expected-version conflicts                                               |
+| Concurrency             | Row locking, lock contention, stale reads, refund/reversal exclusion                                            |
+| Redis fault injection   | Controlled stale-fill race, unversioned-key counterfactual, read/write failures, fallback, cross-user isolation |
+| Provider integration    | Evidence handling, lifecycle state, checkpoints, reconciliation                                                 |
+| Derived state           | Projection rebuilding and canonical consistency                                                                 |
+| Security                | JWT validation, ownership, cross-user authorization                                                             |
+| Runtime failures        | Response loss, worker termination, pool exhaustion, deadlocks                                                   |
+| Recovery                | Backup/restore, projection reconstruction, canonical audits                                                     |
+| Deployment              | Preflight checks, revision compatibility, readiness, graceful shutdown                                          |
+| Schema evolution        | Rollback, historical backfill invariants, incompatible revisions                                                |
+| Async execution         | AsyncSession behavior, cancellation, session ownership, lock contention                                         |
+| Middleware              | Cancellation propagation and request-context isolation                                                          |
 
 ---
 
@@ -574,8 +562,6 @@ The tested scenarios include:
 
 **Result:** 5/5 native-async experimental tests passed.
 
-These experiments are distinct from the earlier 208-test baseline and from the later 289-test Moneta worktree regression.
-
 The native-async implementation is experimental and is not the application's production correction endpoint.
 
 ### ASGI Middleware Behavior
@@ -617,14 +603,14 @@ The project has not undergone production traffic, availability, or incident-resp
 
 Moneta is a lightweight **HTML/CSS/JavaScript interface** served at `GET /demo`. It is a presentation layer over existing APIs, **not** the core engineering deliverable.
 
-| Screen | Data source | V1 boundary |
-|---|---|---|
-| Login | `POST /auth/login` | Existing account required; no hard-coded demo identity |
-| Dashboard | `GET /summary` | Shows current API summary, not all canonical projections |
-| Accounts | `GET /accounts`, `GET /projections/accounts` | Missing projections are shown explicitly, not fabricated |
-| Transactions | `GET /transactions` | Read-only; first 100 **oldest-by-ID** results under the merged Phase A ordering |
-| Reconciliation | `GET /reconciliations/{id}` | Lookup by ID; no listing endpoint |
-| Engineering | Static explanation | Not a live operations console |
+| **Screen**     | **Data source**                              | **V1 boundary**                                                                 |
+| -------------- | -------------------------------------------- | ------------------------------------------------------------------------------- |
+| Login          | `POST /auth/login`                           | Existing account required; no hard-coded demo identity                          |
+| Dashboard      | `GET /summary`                               | Shows current API summary, not all canonical projections                        |
+| Accounts       | `GET /accounts`, `GET /projections/accounts` | Missing projections are shown explicitly, not fabricated                        |
+| Transactions   | `GET /transactions`                          | Read-only; first 100 **oldest-by-ID** results under the merged Phase A ordering |
+| Reconciliation | `GET /reconciliations/{id}`                  | Lookup by ID; no listing endpoint                                               |
+| Engineering    | Static explanation                           | Not a live operations console                                                   |
 
 The browser keeps JWTs **only in memory**; logout clears displayed personal data. API errors yield visible error/empty states instead of a fake-data fallback. The UI intentionally does not initiate financial writes in v1.
 
@@ -634,21 +620,21 @@ The browser keeps JWTs **only in memory**; logout clears displayed personal data
 
 ## Technology Stack
 
-| Layer | Technology |
-|---|---|
-| Language | Python |
-| API framework | FastAPI |
-| Validation | Pydantic |
-| Database | PostgreSQL |
-| ORM | SQLAlchemy |
-| Schema migrations | Alembic |
+| **Layer**                      | **Technology**                                                 |
+| ------------------------------ | -------------------------------------------------------------- |
+| Language                       | Python                                                         |
+| API framework                  | FastAPI                                                        |
+| Validation                     | Pydantic                                                       |
+| Database                       | PostgreSQL                                                     |
+| ORM                            | SQLAlchemy                                                     |
+| Schema migrations              | Alembic                                                        |
 | Authentication / authorization | JWT, declarative route policy, short-lived immutable Principal |
-| Testing | pytest, PostgreSQL and Redis integration tests |
-| Async verification | asyncio, AsyncSession, asyncpg |
-| Application server | Uvicorn |
-| CI configuration | GitHub Actions |
-| Optional response cache | Redis |
-| Demo | HTML, CSS, JavaScript (Moneta) |
+| Testing                        | pytest, PostgreSQL and Redis integration tests                 |
+| Async verification             | asyncio, AsyncSession, asyncpg                                 |
+| Application server             | Uvicorn                                                        |
+| CI configuration               | GitHub Actions                                                 |
+| Optional response cache        | Redis                                                          |
+| Demo                           | HTML, CSS, JavaScript (Moneta)                                 |
 
 The application primarily uses synchronous financial services. Native-async financial behavior is evaluated separately through isolated experiments.
 
@@ -670,7 +656,7 @@ Some tests require PostgreSQL database-creation privileges or additional privile
 
 From the `backend` directory:
 
-```bash
+```
 pip install -r requirements.txt
 pip install -r requirements-test.txt
 ```
@@ -681,7 +667,7 @@ Set `DATABASE_URL` to a PostgreSQL database intended for the current operation.
 
 For example:
 
-```bash
+```
 export DATABASE_URL="postgresql://USER:PASSWORD@localhost:5432/finance_dev_db"
 ```
 
@@ -689,7 +675,7 @@ Use a separate, disposable database for tests.
 
 ### Apply Migrations
 
-```bash
+```
 alembic upgrade head
 ```
 
@@ -701,14 +687,14 @@ Do not bypass database-safety checks when preparing a test environment.
 
 From the `backend` directory, use a **disposable** PostgreSQL test database:
 
-```bash
+```
 export DATABASE_URL="postgresql://USER:PASSWORD@localhost:5432/finance_test_db"
 python -m pytest -q
 ```
 
 To reproduce the Redis-related suite, start a local Redis instance and use a **dedicated disposable Redis database** (database 15 is an example, not a requirement):
 
-```bash
+```
 export REDIS_TEST_URL="redis://127.0.0.1:6379/15"
 export REQUIRE_REDIS_TESTS=1
 
@@ -722,43 +708,13 @@ The Redis integration fixtures may **flush the configured Redis test database**.
 
 ### Start the API
 
-```bash
+```
 uvicorn app.main:app --reload --port 8765
 ```
 
 Visit `http://127.0.0.1:8765/demo` for Moneta or `http://127.0.0.1:8765/docs` for Swagger. Register an account using `POST /auth/register` before logging in to a fresh environment. Moneta will show an empty financial history until actual transactions exist.
 
 Redis is optional for the running application: set `REDIS_URL` only when provider listing caching is needed. Integration tests use the separate `REDIS_TEST_URL` and `REQUIRE_REDIS_TESTS=1` settings shown above.
-
----
-
-## Engineering Principles
-
-This project is guided by the following principles:
-
-**Preserve business meaning.** Financial state transitions must respect explicit domain relationships and invariants.
-
-**Define transaction boundaries.** Atomic operations do not automatically guarantee correctness across concurrent transactions.
-
-**Treat retries as normal execution.** A committed financial command must not be applied again because its original response was lost.
-
-**Verify database behavior on a real database.** Mocked dependencies cannot reproduce every locking, isolation, commit, or rollback behavior.
-
-**Separate observations from authority.** External evidence, canonical records, historical evidence, and derived projections have different responsibilities.
-
-**Prefer prevention over retrospective detection.** Known invalid financial states should be rejected before commit whenever the system can enforce the required invariant.
-
-**Make recovery testable.** Critical financial state should be auditable, and derived views should be reconstructable.
-
-**State the limits of evidence.** A passing test establishes behavior under tested conditions, not correctness across every possible execution path.
-
-**Separate identity from session lifetime.** Authentication connections should not stay checked out while the business handler acquires its own transaction.
-
-**Do not treat cache TTL as a consistency mechanism.** PostgreSQL owns committed revisions; Redis stores derived responses only.
-
-**Make query ordering explicit.** Database execution plans must not determine an API pagination contract.
-
-**Control the cost of complexity.** Introduce mechanisms in response to explicit correctness requirements and demonstrated failure boundaries.
 
 ---
 
@@ -787,14 +743,4 @@ Some guarantees also depend on application write paths following shared locking 
 
 The public repository emphasizes implemented behavior, reproducible tests, documented engineering decisions, and explicit limitations. In particular, the Redis fault-injection results are evidence for **selected failures survived**, not a proof that Redis cannot contribute to future correctness defects.
 
-## Portfolio Note
-
-This repository is intended to demonstrate backend engineering through **concrete failure scenarios and verifiable correctness mechanisms**, rather than claims of production scale.
-
-The primary emphasis is the relationship between:
-
-**Business Requirements → Invariants → Failure Boundaries → Implementation → Verification Evidence**
-
-The central engineering objective is not to eliminate all uncertainty, but to establish which correctness properties have been tested, under which conditions, and where additional evidence is still required.
-
-**Development disclosure:** GitHub Copilot assisted with portions of implementation, test creation, and documentation. The engineering claims in this README are framed by reproducible scenarios, reported outcomes, and explicit limitations rather than by claims of unaided authorship.
+**Development disclosure:** GitHub Copilot assisted with portions of implementation, test creation, and documentation.
