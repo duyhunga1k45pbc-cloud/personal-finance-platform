@@ -1,0 +1,38 @@
+services:
+  api:
+    image: pfp-api:local
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    env_file:
+      - ../backend/.local/api-container.env
+    expose:
+      - "8000"
+    networks:
+      backend_default:
+        aliases:
+          - pfp-api-compose
+    restart: "no"
+
+  kong:
+    image: pfp-kong-authz:0.2.0
+    environment:
+      KONG_DATABASE: "off"
+      KONG_PROXY_LISTEN: "0.0.0.0:8000"
+      KONG_PLUGINS: "bundled,pfp-authz"
+      KONG_VAULT_ENV_PREFIX: "PFP_"
+      KONG_DECLARATIVE_CONFIG: /etc/kong/kong-compose.yml
+      PFP_GATEWAY_AUTHZ_SECRET: ${PFP_GATEWAY_AUTHZ_SECRET:?Gateway secret required}
+    ports:
+      - "127.0.0.1:8004:8000"
+    volumes:
+      - ./kong/kong-compose.yml:/etc/kong/kong-compose.yml:ro
+    networks:
+      - backend_default
+    depends_on:
+      - api
+    restart: "no"
+
+networks:
+  backend_default:
+    external: true

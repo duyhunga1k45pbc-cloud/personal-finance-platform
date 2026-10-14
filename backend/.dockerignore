@@ -13,3 +13,5 @@ pytest_error.txt
 
 .DS_Store
 Thumbs.db
+# Local credentials
+.local/
