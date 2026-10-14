@@ -3,7 +3,7 @@ _transform: true
 
 services:
   - name: pfp-api
-    url: http://api:8000
+    url: http://host.docker.internal:8765
     routes:
       - name: pfp-accounts-authz
         paths:
@@ -12,7 +12,7 @@ services:
         plugins:
           - name: pfp-authz
             config:
-              authz_url: http://api:8000/internal/gateway/authorize
+              authz_url: http://host.docker.internal:19999/internal/gateway/authorize
               shared_secret: "{vault://env/gateway-authz-secret}"
               timeout_ms: 1000
       - name: pfp-auth-me
@@ -24,7 +24,7 @@ services:
           - /
         strip_path: false
   - name: pfp-public
-    url: http://api:8000
+    url: http://host.docker.internal:8765
     routes:
       - name: pfp-public-route
         paths:

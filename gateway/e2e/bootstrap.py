@@ -63,7 +63,12 @@ def main():
         format=serialization.PublicFormat.SubjectPublicKeyInfo,
     ).decode()
 
-    config = (ROOT / "kong-template.yml").read_text()
+    config = (ROOT.parent / "kong" / "kong-compose.yml").read_text()
+
+    deployment_upstream = "http://pfp-api-compose:8000"
+    e2e_upstream = "http://api:8000"
+    assert deployment_upstream in config
+    config = config.replace(deployment_upstream, e2e_upstream)
 
     config, count = re.subn(
         r'key: "[^"]+"',

@@ -1,5 +1,7 @@
 import os
+import re
 import time
+from pathlib import Path
 
 import psycopg2
 import requests
@@ -11,6 +13,30 @@ KEYCLOAK_URL = os.getenv("E2E_KEYCLOAK_URL", "http://127.0.0.1:18081")
 DATABASE_URL = os.environ["E2E_DATABASE_URL"]
 
 assert DATABASE_URL.endswith("/finance_e2e_db"), "Refusing non-E2E database"
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def normalize_kong_config(config):
+    config = config.replace(
+        "http://api:8000",
+        "http://pfp-api-compose:8000",
+    )
+    config, kid_count = re.subn(
+        r'key: "[^"]+"',
+        'key: "<dynamic-kid>"',
+        config,
+        count=1,
+    )
+    config, key_count = re.subn(
+        r"(        rsa_public_key: \|\n)(?:          .*\n)+",
+        r"\1          <dynamic-public-key>\n",
+        config,
+        count=1,
+    )
+    assert kid_count == 1
+    assert key_count == 1
+    return config
 
 
 def get_token():
@@ -45,6 +71,19 @@ def account_snapshot():
                 """
             )
             return cursor.fetchall()
+
+
+def test_e2e_kong_config_matches_gateway_security_settings():
+    deployment_config = (
+        ROOT / "gateway/kong/kong-compose.yml"
+    ).read_text()
+    e2e_config = (
+        ROOT / "gateway/e2e/generated/kong-e2e.yml"
+    ).read_text()
+
+    assert normalize_kong_config(e2e_config) == normalize_kong_config(
+        deployment_config
+    )
 
 
 def test_unauthorized_write_does_not_mutate_database():

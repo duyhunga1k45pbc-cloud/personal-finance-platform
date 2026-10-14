@@ -4,15 +4,15 @@ import os
 import re
 import socket
 import subprocess
+import threading
 import time
 import uuid
-import threading
-
-from mock_authz import start_mock_server
 from pathlib import Path
 
 import pytest
 import requests
+
+from mock_authz import set_authz_response_mode, start_mock_server
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -37,7 +37,12 @@ def b64(data):
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
 
 
-def generate_jwt(private_key, *, tamper=False, subject="unavailable"):
+def generate_jwt(
+    private_key,
+    *,
+    tamper=False,
+    subject="unavailable",
+):
     now = int(time.time())
 
     header = {
@@ -50,7 +55,6 @@ def generate_jwt(private_key, *, tamper=False, subject="unavailable"):
         "iat": now,
         "exp": now + 300,
     }
-
     message = ".".join(
         b64(json.dumps(obj, separators=(",", ":")).encode())
         for obj in (header, payload)
@@ -241,6 +245,15 @@ def kong_test(tmp_path_factory):
             server_thread.join(timeout=5)
 
 
+@pytest.fixture
+def authz_response_mode(kong_test):
+    def set_mode(mode):
+        set_authz_response_mode(mode)
+
+    yield set_mode
+    set_authz_response_mode(None)
+
+
 def test_missing_jwt(kong_test):
     response = requests.get(
         BASE_URL + "/accounts",
@@ -251,17 +264,18 @@ def test_missing_jwt(kong_test):
 
 def test_invalid_signature(kong_test):
     token = generate_jwt(kong_test, tamper=True)
+    headers = {"Authorization": f"Bearer {token}"}
 
     response = requests.get(
         BASE_URL + "/accounts",
-        headers={"Authorization": f"Bearer {token}"},
+        headers=headers,
         timeout=5,
     )
     assert response.status_code == 401
 
 
-def test_authorization_service_unavailable(kong_test):
-    token = generate_jwt(kong_test)
+def test_authorization_connection_failure(kong_test):
+    token = generate_jwt(kong_test, subject="connection_failure")
 
     response = requests.get(
         BASE_URL + "/accounts",
@@ -272,6 +286,41 @@ def test_authorization_service_unavailable(kong_test):
     assert response.status_code == 503
     assert response.json()["message"] == "Authorization unavailable"
 
+
+def test_authorization_malformed_response_fails_closed(
+    kong_test,
+    authz_response_mode,
+):
+    token = generate_jwt(kong_test, subject="allow")
+    headers = {"Authorization": f"Bearer {token}"}
+    authz_response_mode("malformed")
+
+    response = requests.get(
+        BASE_URL + "/accounts",
+        headers=headers,
+        timeout=5,
+    )
+
+    assert response.status_code == 503, response.text
+    assert response.json()["message"] == "Invalid authorization response"
+
+
+def test_authorization_http_500_fails_closed(
+    kong_test,
+    authz_response_mode,
+):
+    authz_response_mode("http500")
+    token = generate_jwt(kong_test, subject="allow")
+    headers = {"Authorization": "Bearer " + token}
+
+    response = requests.get(
+        BASE_URL + "/accounts",
+        headers=headers,
+        timeout=5,
+    )
+
+    assert response.status_code == 503, response.text
+    assert response.json()["message"] == "Authorization unavailable"
 
 
 def test_authorization_allow(kong_test):
