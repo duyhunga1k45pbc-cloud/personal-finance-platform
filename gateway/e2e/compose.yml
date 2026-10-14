@@ -1,0 +1,113 @@
+name: pfp-e2e
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: pfp_e2e
+      POSTGRES_PASSWORD: e2e_only_password
+      POSTGRES_DB: finance_e2e_db
+    ports:
+      - "127.0.0.1:15432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pfp_e2e -d finance_e2e_db"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - internal
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    command: ["start-dev", "--import-realm", "--hostname=http://localhost:18081"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: e2e_only_admin_password
+      KC_HTTP_ENABLED: "true"
+    volumes:
+      - ./realm.json:/opt/keycloak/data/import/pfp-e2e-realm.json:ro
+    ports:
+      - "127.0.0.1:18081:8080"
+    networks:
+      - internal
+
+
+  migrate:
+    build:
+      context: ../../backend
+    working_dir: /app
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      DATABASE_URL: postgresql://pfp_e2e:e2e_only_password@postgres:5432/finance_e2e_db
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - internal
+    restart: "no"
+
+  api:
+    build:
+      context: ../../backend
+    environment:
+      APP_ENV: development
+      SECRET_KEY: e2e-only-backend-signing-key-not-for-production
+      JWT_ALGORITHM: HS256
+      DATABASE_URL: postgresql://pfp_e2e:e2e_only_password@postgres:5432/finance_e2e_db
+      OIDC_ISSUER: http://localhost:18081/realms/pfp-e2e
+      OIDC_JWKS_URL: http://keycloak:8080/realms/pfp-e2e/protocol/openid-connect/certs
+      OIDC_AUDIENCE: pfp-api
+      OIDC_CLIENT_ID: moneta
+      PFP_GATEWAY_AUTHZ_SECRET: e2e_only_gateway_secret
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+    networks:
+      - internal
+
+
+
+  seed:
+    build:
+      context: ../../backend
+    working_dir: /app
+    command: ["python", "/e2e/seed_identity.py"]
+    environment:
+      PYTHONPATH: /app
+      DATABASE_URL: postgresql://pfp_e2e:e2e_only_password@postgres:5432/finance_e2e_db
+      E2E_KEYCLOAK_URL: http://keycloak:8080
+    volumes:
+      - ./seed_identity.py:/e2e/seed_identity.py:ro
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      keycloak:
+        condition: service_started
+    networks:
+      - internal
+    restart: "no"
+
+  kong:
+    build:
+      context: ../
+      dockerfile: kong/Dockerfile
+    environment:
+      KONG_DATABASE: "off"
+      KONG_PROXY_LISTEN: "0.0.0.0:8000"
+      KONG_PLUGINS: "bundled,pfp-authz"
+      KONG_VAULT_ENV_PREFIX: "PFP_"
+      KONG_DECLARATIVE_CONFIG: /etc/kong/kong-e2e.yml
+      PFP_GATEWAY_AUTHZ_SECRET: e2e_only_gateway_secret
+    ports:
+      - "127.0.0.1:18004:8000"
+    volumes:
+      - ./generated/kong-e2e.yml:/etc/kong/kong-e2e.yml:ro
+    depends_on:
+      - api
+    networks:
+      - internal
+    restart: "no"
+
+networks:
+  internal:
+    driver: bridge
