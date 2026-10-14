@@ -89,8 +89,8 @@ services:
 
   kong:
     build:
-      context: ../
-      dockerfile: kong/Dockerfile
+      context: ../kong
+      dockerfile: Dockerfile
     environment:
       KONG_DATABASE: "off"
       KONG_PROXY_LISTEN: "0.0.0.0:8000"
