@@ -12,26 +12,19 @@ The backend implements financial event modeling, transaction and concurrency con
 
 ## Engineering Highlights
 
-| **Area**                  | **Implemented and verified behavior**                                                                                                     |
-| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| Financial domain modeling | Canonical financial events, signed entries, transfers, refunds, reversals, and corrections                                                |
-| Concurrency control       | PostgreSQL row locking, expected-version guards, deterministic conflicting transactions                                                   |
-| Transactional idempotency | Database-backed command receipts, retry recovery, concurrent same-key replay                                                              |
-| Historical integrity      | Append-only financial history and causal event relationships                                                                              |
-| Reconciliation            | Explicit handling of conflicting and incomplete external evidence                                                                         |
-| Recovery                  | Rebuildable projections, canonical-state audits, backup/restore exercises                                                                 |
-| Failure injection         | Commit acknowledgment loss, worker termination, deadlocks, connection-pool exhaustion, Redis failures and deterministic stale-cache races |
-| Security                  | Keycloak OIDC/JWT authentication, Kong JWT and external AuthZ pilot, FastAPI route policies and SQL ownership scoping                       |
-| Schema evolution          | Alembic migrations, rollback verification, historical backfill, revision compatibility checks                                             |
-| Async correctness         | SQLAlchemy AsyncSession, cancellation, connection lifecycle, native-async experiments                                                     |
-| Cache correctness         | PostgreSQL-revisioned Redis keys, ownership-before-cache checks, 15 reported fault-injection tests including a vulnerable counterfactual  |
-| Read performance          | N+1 removal, PostgreSQL-revisioned Redis cache, query-plan analysis and controlled benchmarks                                             |
-| Query correctness         | Deterministic transaction pagination and a measured composite-index optimization (merged to `main` in PR #6 on 2026-10-12)                |
-| Demo                      | Moneta read-only web interface with six static Engineering cards over existing authenticated FastAPI APIs                                  |
+| **Area** | **Engineering evidence** |
+| --- | --- |
+| Financial correctness | PostgreSQL locking, idempotent commands, append-only history, reconciliation |
+| Cache consistency | PostgreSQL-revisioned Redis keys, ownership-before-cache checks, fault injection |
+| Query behavior | Deterministic pagination and a measured composite-index change |
+| Reliability | Connection-pool lifecycle, failure injection, recovery and migration checks |
+| Security | FastAPI ownership enforcement, with a focused Keycloak/Kong authorization pilot |
+| Verification | PostgreSQL and Redis integration tests; selected async experiments and gateway full-stack E2E |
+| Demo | Moneta read-only interface with six static Engineering cards |
 
-**Latest reported local regression:** **328 passed, 0 failed, 0 skipped**, using PostgreSQL and real Redis integration tests. This includes **15 newly reported Redis fault-injection tests** in `backend/tests/test_redis_fault_injection_correctness.py`. These are agent-reported local execution results, not independent verification or a claim about the latest GitHub Actions run; see [Test Results and Coverage](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#test-results-and-coverage) for separate commit-specific GitHub Actions results.
+**Latest reported local backend suite:** **347 passed, 0 failed, 0 skipped in 136.83 seconds**, using PostgreSQL-backed tests and real Redis integration. This local run is not tied to a verified commit-specific CI run; CI evidence is listed separately under [Test Results and Coverage](#test-results-and-coverage).
 
-The verification applies to the scenarios exercised by the tests. It does not establish exhaustive correctness or production readiness.
+The results apply to tested scenarios; they do not establish exhaustive correctness or production readiness.
 
 ---
 
@@ -158,7 +151,7 @@ PostgreSQL and Redis integration tests cover rollback, savepoints, concurrent wr
 
 The design still makes PostgreSQL authorization/revision queries on a cache hit, serializes revision updates for the same connection, and retains older Redis keys until their TTLs expire. The provider listing still needs pagination for very large histories.
 
-**Implementation references:** `backend/app/listing_cache.py`, migration `k1b9c6d3f477`, `backend/tests/test_provider_listing_cache.py`, and `backend/tests/test_provider_listing_revision_concurrency.py`. The separate [fault-injection case study](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-redis-fault-injection-and-invariant-verification) evaluates the failure boundaries of this design.
+**Implementation references:** `backend/app/listing_cache.py`, migration `k1b9c6d3f477`, `backend/tests/test_provider_listing_cache.py`, `backend/tests/test_provider_listing_revision_concurrency.py`, and `backend/tests/test_redis_fault_injection_correctness.py`.
 
 ---
 
@@ -303,148 +296,15 @@ The project does not claim to implement a production distributed event-processin
 
 ## Core Engineering Properties
 
-### 1. Financial Domain Invariants
-
-Financial operations are represented through explicit domain semantics instead of treating all transactions as interchangeable records.
-
-Supported concepts include:
-
-- Income and expenses
-- Transfers between accounts
-- Refunds and reversals
-- Corrections and void operations
-- Reconciliation adjustments
-- Canonical events and signed financial entries
-
-The implementation uses these distinctions to preserve financial meaning across state transitions.
-
-Business invariants are enforced within the application and verified through database-backed tests.
-
-### 2. Transactional Idempotency
-
-Financial commands use database-backed idempotency records to prevent the same command from applying its effects repeatedly.
-
-Verification includes:
-
-- Repeated requests with the same command identity
-- Conflicting reuse of an idempotency key
-- Concurrent same-key commands
-- Successful commits followed by simulated response loss
-- Recovery of previously committed command responses
-
-The intended guarantee is that retrying an already committed command does not duplicate its financial effect.
-
-### 3. Concurrency and Version Control
-
-The system uses PostgreSQL transaction semantics to protect financial state against selected concurrent modifications.
-
-Implemented mechanisms include:
-
-- Expected-version checks
-- Row-level locking
-- Shared original-event serialization for causal commands
-- Stale-write rejection
-- Database-backed concurrency regression tests
-
-Tests exercise actual PostgreSQL lock contention rather than relying exclusively on mocked database behavior.
-
-The verified guarantees depend on the transaction boundaries and isolation assumptions exercised by those tests.
-
-### 4. Historical Integrity and Causal Relationships
-
-Canonical financial events, signed entries, and append-only historical records provide evidence of financial state evolution.
-
-Causal relationships connect operations such as refunds and reversals to their original financial events.
-
-Historical evidence supports:
-
-- State-transition verification
-- Canonical audits
-- Investigation of inconsistent financial relationships
-- Recovery and reconciliation workflows
-
-The application distinguishes recorded financial history from derived representations of that history.
-
-### 5. Explicit Reconciliation
-
-External financial evidence and accepted canonical state are treated as separate concerns.
-
-External observations can be stale, incomplete, duplicated, or contradictory.
-
-Reconciliation workflows preserve the distinction between:
-
-- What an external provider reports
-- What the application currently records
-- What has been accepted as canonical financial state
-
-Conflicting evidence is surfaced rather than silently converted into an authoritative financial update.
-
-### 6. Rebuildable Projections
-
-Balances and financial summaries are derived from canonical financial records.
-
-Projection tests verify that derived data can be removed, reconstructed, and checked against its source.
-
-This reduces dependence on projections as independent sources of financial truth.
+Financial events and signed entries are the source for balances and summaries; projections can be rebuilt from canonical records. Commands use database-backed idempotency, expected-version checks and PostgreSQL locking. Reconciliation keeps external observations distinct from accepted financial state, surfacing stale, incomplete or conflicting evidence rather than silently treating it as authoritative. The refund case study shows where these mechanisms interact under concurrency.
 
 ### 7. Security Boundaries
 
-Authentication establishes a verified caller identity; authorization determines which operations that identity may perform. The application implements JWT-based authentication and user-scoped authorization.
+Authentication identifies the caller; authorization limits operations to owned resources. The route-policy table and immutable `Principal` are implemented in `backend/app/authorization.py` and `backend/app/routers/auth.py`. SQL ownership predicates are applied before joins, counts, pagination and aggregation. Policies cover HTTP routes and are kept consistent with handlers by tests; ownership checks remain distributed through service queries. See [`backend/SECURITY_V1.md`](backend/SECURITY_V1.md) for the policy boundaries and PostgreSQL-backed cross-user tests.
 
-Security verification includes:
+The focused Kong/Keycloak pilot adds OIDC authentication, Kong JWT verification and external authorization for `/accounts`; FastAPI retains ownership enforcement. It is not an organization-wide authorization platform. Deployment, login-route scope and manual signing-key rotation are documented in [`gateway/README.md`](gateway/README.md).
 
-- Invalid and tampered tokens
-- Invalid credentials
-- Deleted-user identities
-- Unauthorized cross-user reads
-- Unauthorized cross-user modifications
-- Ownership checks on financial resources
-
-The application does not claim to provide a complete OAuth2/OIDC identity platform or a shared multi-service authorization framework.
-
-#### Authorization architecture
-
-Authentication and authorization are separate steps. JWT validation establishes **who is calling**; a valid token alone grants nothing beyond the caller's own data. Protected routes use an immutable, verified `Principal` obtained through a short-lived authentication session that closes before business logic checks out its own connection.
-
-- **Policy model** (`backend/app/authorization.py`): a `Subject` (the authenticated user id) acts with an `Action` on a `Resource` (a `ResourceType` plus its owner id). The only rule is ownership; there are no roles, scopes or admin permissions.
-- **Route policy table:** every HTTP operation has one `ROUTE_POLICIES` entry classified as `PUBLIC`, `OWNER` (resource + action) or `METRICS_TOKEN`.
-- **Runtime enforcement:** an app-wide dependency returns 403 for any HTTP route without a declared policy. Owner-scoped routers carry a router-level guard that authenticates, then requires the route's own policy to be a fully specified `OWNER` policy. Object-level checks (`authorize_object`) are bound to that same route policy and cannot borrow a grant from another route.
-- **SQL ownership scoping:** `owned(query, column, subject)` applies the ownership predicate in SQL, before joins, counts, pagination and aggregation. It is used by the account, provider-connection, active-transaction and projection queries. Existing row-locking queries are unchanged.
-- **Contracts preserved:** 401 for missing or invalid credentials, 404 for another user's object, and 422 for an unowned refund or reversal original event, identical to a non-existent one.
-
-Boundaries of this enforcement:
-
-- It covers HTTP `APIRoute` handlers only. Mounted sub-apps, WebSocket routes and raw routes are prohibited by a startup inventory check (`assert_only_policed_routes`), not protected by it; adding one requires its own reviewed enforcement.
-- Ownership checks remain decentralized. Many service-layer and locked queries still filter by `user_id` directly, and only the account, transaction and provider-connection single-object reads call `authorize_object`. The policy layer is an additional check, not a replacement for those queries.
-- The policy table and handlers are kept consistent by tests, not by construction.
-
-The public `GET /demo` page is also declared in `ROUTE_POLICIES`; the HTML shell is public, but every data API it calls remains independently authenticated and authorized.
-
-See `backend/SECURITY_V1.md` for details. Verification is PostgreSQL-backed (`backend/tests/test_authorization_policy.py`): cross-user reads and writes with no database side effects, nested-resource checks, pagination and aggregation isolation, policy-change tests, and query-count and connection-checkout baselines.
-
-#### Kong and Keycloak pilot
-
-Keycloak issues OIDC access tokens. FastAPI verifies token signatures and configured issuer, audience and expiry, then maps the verified issuer and subject to a local user. Kong validates JWT signatures and expiry using its configured RS256 key; its external authorization plugin calls FastAPI for the `/accounts` pilot route. FastAPI still enforces its own route policies and SQL ownership checks; the gateway policy does not replace backend authorization.
-
-This is a focused integration pilot, not an organization-wide authorization platform. Gateway deployment, route scope, legacy login/register availability, and manual signing-key rotation are documented in [`gateway/README.md`](gateway/README.md).
-
-### 8. Schema Evolution Safety
-
-Database schema changes are managed with Alembic.
-
-Verification includes:
-
-- Transactional rollback after injected migration failures
-- Preservation of historical financial meaning during canonical-state backfill
-- Readiness rejection of incompatible schema revisions
-- Migration tests using disposable PostgreSQL databases
-- Concurrent index creation in a separate Alembic autocommit block (merged Phase A work), including downgrade and invalid-index recovery checks
-
-The test infrastructure rejects the protected `finance_db` database as a pytest target.
-
-Production-target migrations are blocked by default and require explicit per-invocation authorization.
-
-These protections do not establish zero-downtime or rolling-upgrade compatibility.
+Alembic verification covers transactional rollback, canonical-history backfill, readiness rejection of incompatible revisions, and concurrent index creation with downgrade and invalid-build recovery. Test databases reject the protected `finance_db` target, and production migrations require explicit authorization. These safeguards do not establish zero-downtime or rolling-upgrade compatibility.
 
 ---
 
@@ -452,28 +312,17 @@ These protections do not establish zero-downtime or rolling-upgrade compatibilit
 
 The repository includes unit, integration, concurrency, failure-injection, and end-to-end tests. Database-sensitive scenarios use PostgreSQL; optional cache tests include Redis integration. The reported outcomes apply only to the conditions exercised.
 
-### Latest Reported Local Regression
+### Local Test Results
 
-| **Result**                             | **Value**                                                                                    |
-| -------------------------------------- | -------------------------------------------------------------------------------------------- |
-| Full local suite (reported)            | **328 passed, 0 failed, 0 skipped**                                                          |
-| Redis fault-injection focus (reported) | **15 passed**                                                                                |
-| Cache suites combined (reported)       | **32 passed**                                                                                |
-| Kong authorization integration (local) | **8 passed**, including timeout, connection failure, malformed response, and HTTP 500 denial |
-| Gateway full-stack E2E (local)          | **2 passed**: config parity, authenticated read, denied write, database non-mutation              |
-| Database                               | Disposable PostgreSQL migrated to Alembic head                                               |
-| Cache tests                            | Real Redis integration included                                                              |
-| Source of results                      | Local execution reports; 328-test result not independently rerun for this README edit         |
-| CI mapping for 328-test count          | **Not tied to a verified commit**; Actions outcomes are listed separately below              |
-
-The 328-test, Redis and combined-cache results are previously reported local
-results. The gateway results are separate focused local runs and are not part
-of that count. These outcomes do not imply production deployment or universal
-coverage of runtime failure modes.
+The latest reported local backend suite completed with **347 passed, 0 failed,
+0 skipped in 136.83 seconds**, using PostgreSQL-backed tests and real Redis.
+This result is not tied to a verified commit-specific CI run. Separately, the
+Kong authorization integration suite had **8 passed**, and gateway full-stack
+E2E had **2 passed**; neither count is included in the backend suite result.
 
 ### GitHub Actions Evidence
 
-These results are commit-specific and distinct from the local test counts:
+These commit-specific results are separate from local test counts:
 
 - [`4292cb2`](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/commit/4292cb2ce5a41f2f95c768e8e6f46fd38ea7ed22): [Kong Authorization Integration Tests](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/actions/runs/38627335128) passed.
 - [`4292cb2`](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/commit/4292cb2ce5a41f2f95c768e8e6f46fd38ea7ed22): [Gateway Full-Stack E2E](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/actions/runs/38627335082) passed.
@@ -481,123 +330,49 @@ These results are commit-specific and distinct from the local test counts:
 - [`27bb173`](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/commit/27bb1738f23ec7fbb86d2a3e6bc5b6f9a485eff1): [Gateway Full-Stack E2E](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/actions/runs/38627652857) passed.
 - [`27bb173`](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/commit/27bb1738f23ec7fbb86d2a3e6bc5b6f9a485eff1): [Backend CI](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/actions/runs/38627653437) passed. The dedicated Kong integration workflow did not run for this commit.
 
-The dedicated Kong integration workflow covers fail-closed behavior for
-external-authorization timeout, connection failure, malformed responses and
-HTTP 500. The full-stack E2E checks an authenticated account read and denied
-account write, then verifies that the database snapshot did not change. It also
-compares generated E2E Kong configuration with deployment configuration after
-normalizing the test API address and test-realm signing key. Passing workflows
-is evidence for those scenarios, not production deployment or exhaustive
-security correctness.
+The Kong integration workflow tests fail-closed handling of external-authorization
+timeout, connection failure, malformed responses and HTTP 500. E2E verifies an
+authenticated account read, a denied write with no database mutation, and
+deployment/E2E Kong configuration parity (normalizing the test API address and
+test-realm signing key). These results are evidence for the exercised scenarios,
+not production deployment or exhaustive security correctness.
 
-### Verification Coverage
-
-| **Area**                | **Selected scenarios**                                                                                          |
-| ----------------------- | --------------------------------------------------------------------------------------------------------------- |
-| Financial semantics     | Canonical events, entries, transfers, refunds, reversals, corrections                                           |
-| Transaction correctness | Idempotent replay, competing commands, expected-version conflicts                                               |
-| Concurrency             | Row locking, lock contention, stale reads, refund/reversal exclusion                                            |
-| Redis fault injection   | Controlled stale-fill race, unversioned-key counterfactual, read/write failures, fallback, cross-user isolation |
-| Provider integration    | Evidence handling, lifecycle state, checkpoints, reconciliation                                                 |
-| Derived state           | Projection rebuilding and canonical consistency                                                                 |
-| Security                | JWT validation, ownership, cross-user authorization                                                             |
-| Gateway authorization   | Kong JWT, external AuthZ failure handling, read and denied-write E2E with database non-mutation                 |
-| Runtime failures        | Response loss, worker termination, pool exhaustion, deadlocks                                                   |
-| Recovery                | Backup/restore, projection reconstruction, canonical audits                                                     |
-| Deployment              | Preflight checks, revision compatibility, readiness, graceful shutdown                                          |
-| Schema evolution        | Rollback, historical backfill invariants, incompatible revisions                                                |
-| Async execution         | AsyncSession behavior, cancellation, session ownership, lock contention                                         |
-| Middleware              | Cancellation propagation and request-context isolation                                                          |
+The broader suite covers financial transitions, idempotency, PostgreSQL
+concurrency, Redis fault injection, reconciliation, projections, authorization,
+runtime failures, recovery and schema evolution. The individual case studies
+describe the relevant counterexamples, measurements and trade-offs.
 
 ---
 
 ## Runtime Failure Verification
 
-Fault-injection exercises include:
-
-- Simulated HTTP response loss after successful database commit
-- Idempotent retry following an ambiguous response outcome
-- Connection-pool exhaustion and recovery
-- Worker termination before and after transaction commit
-- PostgreSQL deadlock recovery using SQLSTATE `40P01`
-- Verification of canonical records, historical entries, receipts, and provider checkpoints after failure
-
-Worker-process failure scenarios are exercised directly.
-
-The reported tests do not establish equivalent behavior for actual PostgreSQL server crashes, infrastructure outages, or real network and reverse-proxy disconnects.
+Failure tests exercise post-commit response loss and idempotent retry, pool
+exhaustion, worker termination before/after commit, and PostgreSQL deadlock
+recovery (`40P01`). They verify canonical records, history, receipts and
+provider checkpoints. They do not reproduce PostgreSQL server crashes,
+infrastructure outages or real network/reverse-proxy disconnects.
 
 ---
 
 ## Async Execution Verification
 
-The application's primary financial services use synchronous SQLAlchemy.
-
-Separate experiments investigate whether selected correctness contracts remain valid under different asynchronous execution models.
-
-### SQLAlchemy AsyncSession Bridge
-
-Five isolated PostgreSQL-backed tests evaluate execution through `AsyncSession.run_sync()`.
-
-The scenarios cover:
-
-- Cancellation before commit
-- Simulated response loss after commit
-- Conflicting guarded writes
-- Connection-pool exhaustion and recovery
-- Independent session ownership and transaction isolation
-
-These tests verify selected async-driver and transaction-lifecycle behavior.
-
-They do not constitute a native-async rewrite of the application.
-
-### Native-Async Financial Operations
-
-Five additional PostgreSQL-backed tests exercise a **test-only native-async financial correction implementation** using `async def`, `await`, and SQLAlchemy `AsyncSession`.
-
-The tested scenarios include:
-
-1. Correct financial state transitions and idempotent replay
-2. Cancellation before commit and rollback verification
-3. Simulated post-commit acknowledgment loss
-4. Concurrent guarded writes with PostgreSQL lock contention
-5. Connection-pool exhaustion and recovery
-
-**Result:** 5/5 native-async experimental tests passed.
-
-The native-async implementation is experimental and is not the application's production correction endpoint.
-
-### ASGI Middleware Behavior
-
-Additional tests exercise actual ASGI middleware execution with controlled asynchronous coroutines.
-
-They verify:
-
-- Cancellation propagation
-- Request-context cleanup
-- Request-ID `ContextVar` reset
-- Concurrent request-context isolation
-- Expected process-local request metrics
-
-These tests do not establish behavior for every real client disconnect or cancellation of synchronous database operations.
+The application's financial path uses synchronous SQLAlchemy. Separate
+PostgreSQL-backed experiments evaluate `AsyncSession.run_sync()` lifecycle and
+test-only native-async corrections across cancellation, response loss,
+conflicting writes, lock contention and pool recovery. The native-async
+experiment passed **5/5 tests**; it is not the production correction endpoint
+or an application rewrite. ASGI middleware tests cover cancellation,
+request-context cleanup/isolation and process-local metrics, not every real
+client disconnect or cancellation of synchronous database work.
 
 ---
 
 ## Operational Verification
 
-Additional exercises cover:
-
-- PostgreSQL backup and restore
-- Projection deletion and rebuilding
-- Canonical-state auditing after recovery
-- Deployment preflight validation
-- Uvicorn process smoke testing
-- Liveness and readiness endpoints
-- Graceful shutdown through SIGTERM
-- Detection of incompatible database revisions
-
-Operational verification focuses on making tested failure outcomes observable and recoverable.
-
-The project has not undergone production traffic, availability, or incident-response validation.
+Exercises cover PostgreSQL backup/restore, projection rebuild and canonical
+audit, deployment preflight, process/readiness checks, SIGTERM shutdown and
+incompatible-revision detection. There has been no production-traffic,
+availability or incident-response validation.
 
 ---
 
@@ -626,23 +401,11 @@ The browser keeps JWTs **only in memory**; logout clears displayed personal data
 
 ## Technology Stack
 
-| **Layer**                      | **Technology**                                                 |
-| ------------------------------ | -------------------------------------------------------------- |
-| Language                       | Python                                                         |
-| API framework                  | FastAPI                                                        |
-| Validation                     | Pydantic                                                       |
-| Database                       | PostgreSQL                                                     |
-| ORM                            | SQLAlchemy                                                     |
-| Schema migrations              | Alembic                                                        |
-| Authentication / authorization | Keycloak OIDC/JWT, Kong JWT and external AuthZ pilot, FastAPI route policy and ownership enforcement |
-| Testing                        | pytest, PostgreSQL and Redis integration, Kong authorization integration, full-stack E2E |
-| Async verification             | asyncio, AsyncSession, asyncpg                                 |
-| Application server             | Uvicorn                                                        |
-| CI configuration               | GitHub Actions                                                 |
-| Optional response cache        | Redis                                                          |
-| Demo                           | HTML, CSS, JavaScript (Moneta)                                 |
-
-The application primarily uses synchronous financial services. Native-async financial behavior is evaluated separately through isolated experiments.
+The backend uses Python, FastAPI, Pydantic, SQLAlchemy, PostgreSQL and Alembic.
+Redis is an optional listing cache. Kong and Keycloak are external components
+for the focused authorization pilot. Tests use pytest; the UI is static
+HTML/CSS/JavaScript served by FastAPI. Financial services primarily use
+synchronous SQLAlchemy; native-async behavior is evaluated separately.
 
 ---
 
@@ -650,13 +413,9 @@ The application primarily uses synchronous financial services. Native-async fina
 
 ### Prerequisites
 
-- Python and pip
-- PostgreSQL
-- Redis (optional for runtime, needed for cache integration tests)
-- A dedicated development database
-- A separate disposable database for testing
-
-Some tests require PostgreSQL database-creation privileges or additional privileges for fault-injection scenarios.
+Python/pip and PostgreSQL are required. Redis is optional at runtime and needed
+for cache integration tests. Use separate development and disposable test
+databases; some tests need database-creation or fault-injection privileges.
 
 ### Install Dependencies
 
@@ -708,7 +467,10 @@ python -m pytest -q tests/test_redis_fault_injection_correctness.py
 python -m pytest -q
 ```
 
-The Redis integration fixtures may **flush the configured Redis test database**. Never use a shared or valuable Redis database. The reported 328-test result is local, environment-dependent evidence; the complete suite may require additional PostgreSQL privileges for some experiments.
+Redis fixtures may **flush the configured Redis test database**; never use a
+shared or valuable database. The reported 347-test result is local,
+environment-dependent evidence, and some experiments require additional
+PostgreSQL privileges.
 
 **Warning:** Tests may create, modify, or destroy data. Never point the test runner at a database containing important records.
 
