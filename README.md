@@ -8,7 +8,7 @@ The backend implements financial event modeling, transaction and concurrency con
 
 **Project status:** Engineering portfolio and experimental application. Not production-deployed.
 
-**Quick navigation:** [Over-refund](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-preventing-concurrent-over-refunds) · [Redis revision cache](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-transaction-consistent-redis-caching) · [Connection pool RCA](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-connection-pool-starvation) · [Index & pagination](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-deterministic-pagination-and-postgresql-indexing) · [Moneta demo](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#moneta-demo-ui) · [Test results](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#test-results-and-coverage) · [Security & Authorization](#7-security-boundaries)
+**Quick navigation:** [Over-refund](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-preventing-concurrent-over-refunds) · [Redis revision cache](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-transaction-consistent-redis-caching) · [Connection pool RCA](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-connection-pool-starvation) · [Index & pagination](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-deterministic-pagination-and-postgresql-indexing) · [Moneta demo](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#moneta-demo-ui) · [Test results](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#test-results-and-coverage) · [Security & Authorization](#security-boundaries)
 
 ## Engineering Highlights
 
@@ -298,7 +298,7 @@ The project does not claim to implement a production distributed event-processin
 
 Financial events and signed entries are the source for balances and summaries; projections can be rebuilt from canonical records. Commands use database-backed idempotency, expected-version checks and PostgreSQL locking. Reconciliation keeps external observations distinct from accepted financial state, surfacing stale, incomplete or conflicting evidence rather than silently treating it as authoritative. The refund case study shows where these mechanisms interact under concurrency.
 
-### 7. Security Boundaries
+### Security Boundaries
 
 Authentication identifies the caller; authorization limits operations to owned resources. The route-policy table and immutable `Principal` are implemented in `backend/app/authorization.py` and `backend/app/routers/auth.py`. SQL ownership predicates are applied before joins, counts, pagination and aggregation. Policies cover HTTP routes and are kept consistent with handlers by tests; ownership checks remain distributed through service queries. See [`backend/SECURITY_V1.md`](backend/SECURITY_V1.md) for the policy boundaries and PostgreSQL-backed cross-user tests.
 
@@ -344,7 +344,9 @@ describe the relevant counterexamples, measurements and trade-offs.
 
 ---
 
-## Runtime Failure Verification
+## Additional Verification
+
+### Runtime Failure Verification
 
 Failure tests exercise post-commit response loss and idempotent retry, pool
 exhaustion, worker termination before/after commit, and PostgreSQL deadlock
@@ -354,7 +356,7 @@ infrastructure outages or real network/reverse-proxy disconnects.
 
 ---
 
-## Async Execution Verification
+### Async Execution Verification
 
 The application's financial path uses synchronous SQLAlchemy. Separate
 PostgreSQL-backed experiments evaluate `AsyncSession.run_sync()` lifecycle and
@@ -367,7 +369,7 @@ client disconnect or cancellation of synchronous database work.
 
 ---
 
-## Operational Verification
+### Operational Verification
 
 Exercises cover PostgreSQL backup/restore, projection rebuild and canonical
 audit, deployment preflight, process/readiness checks, SIGTERM shutdown and
