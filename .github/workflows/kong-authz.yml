@@ -1,0 +1,64 @@
+name: Kong Authorization Integration Tests
+
+on:
+  push:
+    paths:
+      - "gateway/**"
+      - ".github/workflows/kong-authz.yml"
+  pull_request:
+    paths:
+      - "gateway/**"
+      - ".github/workflows/kong-authz.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  kong-authz:
+    name: Kong Authz Integration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest requests
+
+      - name: Generate temporary gateway secret
+        run: |
+          mkdir -p backend/.local
+          chmod 700 backend/.local
+          umask 077
+          openssl rand -hex 32 > backend/.local/gateway-authz-secret
+
+      - name: Build Kong plugin image
+        run: |
+          docker build \
+            -t pfp-kong-authz:0.2.0 \
+            -f gateway/kong/Dockerfile \
+            gateway/kong
+
+      - name: Run Kong integration tests
+        run: |
+          python -m pytest gateway/tests/test_kong_authz.py -v
+
+      - name: Verify Docker cleanup
+        if: always()
+        run: |
+          remaining="$(docker ps -aq --filter name=pfp-kong-pytest)"
+          if [ -n "$remaining" ]; then
+            echo "Kong test containers were not cleaned up"
+            docker ps -a --filter name=pfp-kong-pytest
+            exit 1
+          fi
+          echo "Docker cleanup: PASS"

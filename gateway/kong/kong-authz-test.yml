@@ -1,0 +1,70 @@
+_format_version: "3.0"
+_transform: true
+
+services:
+  - name: pfp-api
+    url: http://host.docker.internal:8765
+    routes:
+      - name: pfp-accounts-authz
+        paths:
+          - /accounts
+        strip_path: false
+        plugins:
+          - name: pfp-authz
+            config:
+              authz_url: http://host.docker.internal:8765/internal/gateway/authorize
+              shared_secret: "{vault://env/gateway-authz-secret}"
+              timeout_ms: 1000
+      - name: pfp-auth-me
+        paths:
+          - /auth/me
+        strip_path: false
+      - name: pfp-route
+        paths:
+          - /
+        strip_path: false
+  - name: pfp-public
+    url: http://host.docker.internal:8765
+    routes:
+      - name: pfp-public-route
+        paths:
+          - "~/demo$"
+          - "~/health/live$"
+        regex_priority: 100
+        strip_path: false
+plugins:
+  - name: correlation-id
+    config:
+      header_name: X-Request-ID
+      generator: uuid
+      echo_downstream: true
+
+  - name: rate-limiting
+    config:
+      minute: 120
+      policy: local
+      limit_by: ip
+
+  - name: jwt
+    service: pfp-api
+    config:
+      key_claim_name: kid
+      claims_to_verify:
+        - exp
+
+consumers:
+  - username: pfp-keycloak
+    jwt_secrets:
+      - key: "riY_JSKRZWmNxEQXVT-ecpumwgOveAn_mxPWt75tQyA"
+        algorithm: RS256
+        secret: "unused-for-rs256"
+        rsa_public_key: |
+          -----BEGIN PUBLIC KEY-----
+          MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAt5dDa9h0Jr1eC7URSFsh
+          MbUZP8dkIvQD/+Nqvggqio2OX8i26RrhcpS2STXGWtHvLGpGjceHsp28BZoRsB02
+          lk69OfoLtih0y9Lo2Yvb4rbKJXfa1xo8O794su7Syt2A8Hjm9XwvLKL+uAy6d/L0
+          dmUKUQjfsMupWMzJPD+nX9J9Pu5bqK/LVCTeZIjYLYEWy8RvJZOVShwiItbfZa7A
+          ZdpZtPkMPCFD6SAGnzMJh8aPm2q7i4ziQtKdT51XGQ+sZSrQpwDj3yXV8DS3p/Kl
+          R0bvWQkQg4Qi8+2H7M7nRKIGctFg3wMlGDrvAgrj65RSskvaM1YgHEbN8aRZ7To/
+          GQIDAQAB
+          -----END PUBLIC KEY-----
