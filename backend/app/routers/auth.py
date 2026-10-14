@@ -7,7 +7,8 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
-
+from app.models import ExternalIdentity
+from app.oidc import verify_oidc_access_token
 from app.account_service import create_default_cash_account
 from app.auth import (
     create_access_token,
@@ -45,6 +46,54 @@ def _unauthorized() -> HTTPException:
         headers={"WWW-Authenticate": "Bearer"},
     )
 
+def _verified_identity(credentials):
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        raise _unauthorized()
+
+    token = credentials.credentials
+
+    # Local PFP JWT
+    payload = decode_access_token(token)
+
+    if payload is not None:
+        try:
+            return ("local", int(payload["sub"]))
+        except (KeyError, TypeError, ValueError):
+            raise _unauthorized()
+
+    # External Keycloak access token
+    external = verify_oidc_access_token(token)
+
+    if external is None:
+        raise _unauthorized()
+
+    return (
+        "oidc",
+        (external["issuer"], external["subject"]),
+    )
+
+
+def _resolve_user_id(db: Session, identity) -> int:
+    kind, value = identity
+
+    if kind == "local":
+        return value
+
+    issuer, subject = value
+
+    user_id = (
+        db.query(ExternalIdentity.user_id)
+        .filter(
+            ExternalIdentity.issuer == issuer,
+            ExternalIdentity.subject == subject,
+        )
+        .scalar()
+    )
+
+    if user_id is None:
+        raise _unauthorized()
+
+    return user_id
 
 def _normalize_email(email: str) -> str:
     return email.strip().lower()
@@ -54,22 +103,20 @@ def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
     db: Session = Depends(get_db),
 ):
-    if credentials is None or credentials.scheme.lower() != "bearer":
-        raise _unauthorized()
+    # 1. Verify token and identify authentication source
+    identity = _verified_identity(credentials)
 
-    payload = decode_access_token(credentials.credentials)
-    if payload is None:
-        raise _unauthorized()
+    # 2. Resolve verified identity to local user ID
+    user_id = _resolve_user_id(db, identity)
 
-    try:
-        user_id = int(payload["sub"])
-    except (KeyError, TypeError, ValueError):
-        raise _unauthorized()
+    # 3. Confirm local user still exists
+    user = (
+        db.query(User)
+        .filter(User.id == user_id)
+        .first()
+    )
 
-    user = db.query(User).filter(User.id == user_id).first()
     if user is None:
-        # A token for a deleted/nonexistent principal is not an authorization
-        # resource lookup failure; it is invalid authentication.
         raise _unauthorized()
 
     return user
@@ -86,29 +133,36 @@ class Principal:
 def get_principal(
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ) -> Principal:
-    """Authenticate with a short-lived session that is closed before the handler runs.
-
-    Same JWT validation and user-existence check as get_current_user. The session is
-    private to this dependency, so its pooled connection is back in the pool before
-    any business session needs one.
     """
-    if credentials is None or credentials.scheme.lower() != "bearer":
-        raise _unauthorized()
+    Authenticate Local JWT or Keycloak OIDC token.
 
-    payload = decode_access_token(credentials.credentials)
-    if payload is None:
-        raise _unauthorized()
+    Resolve verified identity to a local Principal.
+    Close the database session before business handlers run.
+    """
 
-    try:
-        user_id = int(payload["sub"])
-    except (KeyError, TypeError, ValueError):
-        raise _unauthorized()
+    # 1. Verify token before opening the database session
+    identity = _verified_identity(credentials)
 
+    # 2. Resolve verified identity to local user
     with SessionLocal() as db:
-        row = db.query(User.id, User.email).filter(User.id == user_id).first()
-    if row is None:
-        raise _unauthorized()
-    return Principal(id=row.id, email=row.email)
+        user_id = _resolve_user_id(db, identity)
+
+        row = (
+            db.query(User.id, User.email)
+            .filter(User.id == user_id)
+            .first()
+        )
+
+        if row is None:
+            raise _unauthorized()
+
+        principal = Principal(
+            id=row.id,
+            email=row.email,
+        )
+
+    # 3. Database session is already closed
+    return principal
 
 
 def _authorize_owner(request: Request, user_id: int) -> Authorized:

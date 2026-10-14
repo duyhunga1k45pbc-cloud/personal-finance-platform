@@ -23,7 +23,12 @@ def test_demo_page_is_public_and_carries_no_data():
     assert r.headers["cache-control"] == "no-store"
     html = r.text
     assert "moneta" in html and "/auth/login" in html
-    assert "localStorage" not in html and "sessionStorage" not in html
+    assert "localStorage" not in html
+    # sessionStorage is permitted for short-lived PKCE transaction state.
+    assert "sessionStorage.setItem(OIDC_PENDING" in html
+    assert "sessionStorage.removeItem(OIDC_PENDING)" in html
+    assert "sessionStorage.setItem('access_token'" not in html
+    assert "sessionStorage.setItem('refresh_token'" not in html
     assert "Authorization" in html
 
 

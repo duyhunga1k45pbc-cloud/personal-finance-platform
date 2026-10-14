@@ -48,6 +48,34 @@ class User(Base):
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
 
+class ExternalIdentity(Base):
+    __tablename__ = "external_identities"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "issuer",
+            "subject",
+            name="uq_external_identities_issuer_subject",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True)
+    issuer = Column(String(512), nullable=False)
+    subject = Column(String(255), nullable=False)
+
+    user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    created_at = Column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
 class FinancialAccount(Base):
     __tablename__ = "financial_accounts"
     __table_args__ = (

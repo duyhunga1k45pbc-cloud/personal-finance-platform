@@ -16,7 +16,7 @@ from fastapi.routing import APIRoute
 from sqlalchemy import event, text
 
 from app import authorization as authz
-from app.authorization import ROUTE_POLICIES, Access
+from app.authorization import Action, ROUTE_POLICIES, Access, ResourceType, RoutePolicy
 from app.database import Base, SessionLocal, engine
 from app.main import app
 from app.routers import (
@@ -46,6 +46,107 @@ ROUTERS = [
     projections.router,
     providers.router,
 ]
+
+# Independently reviewed route contract. Keep this explicit rather than
+# constructing it from ROUTE_POLICIES so policy drift is detectable.
+EXPECTED_OWNER_ROUTE_CONTRACT = {
+    ("GET", "/summary"): (ResourceType.SUMMARY, Action.READ),
+    ("GET", "/auth/me"): (ResourceType.USER, Action.READ),
+    ("GET", "/accounts"): (ResourceType.ACCOUNT, Action.LIST),
+    ("POST", "/accounts"): (ResourceType.ACCOUNT, Action.CREATE),
+    ("GET", "/accounts/{account_id}"): (ResourceType.ACCOUNT, Action.READ),
+    ("GET", "/transactions"): (ResourceType.TRANSACTION, Action.LIST),
+    ("GET", "/transactions/{transaction_id}"): (ResourceType.TRANSACTION, Action.READ),
+    ("GET", "/transactions/{transaction_id}/history"): (ResourceType.TRANSACTION, Action.READ),
+    ("POST", "/transactions"): (ResourceType.TRANSACTION, Action.CREATE),
+    ("PUT", "/transactions/{transaction_id}"): (ResourceType.TRANSACTION, Action.UPDATE),
+    ("DELETE", "/transactions/{transaction_id}"): (ResourceType.TRANSACTION, Action.DELETE),
+    ("POST", "/transfers"): (ResourceType.TRANSFER, Action.CREATE),
+    ("POST", "/refunds"): (ResourceType.CAUSAL_EVENT, Action.CREATE),
+    ("POST", "/reversals"): (ResourceType.CAUSAL_EVENT, Action.CREATE),
+    ("GET", "/reconciliations/{reconciliation_id}"): (
+        ResourceType.RECONCILIATION,
+        Action.READ,
+    ),
+    ("POST", "/reconciliations"): (ResourceType.RECONCILIATION, Action.CREATE),
+    ("POST", "/reconciliations/{reconciliation_id}/resolve"): (
+        ResourceType.RECONCILIATION,
+        Action.UPDATE,
+    ),
+    ("POST", "/reconciliations/{reconciliation_id}/adjustments"): (
+        ResourceType.RECONCILIATION,
+        Action.UPDATE,
+    ),
+    ("POST", "/projections/rebuild"): (ResourceType.PROJECTION, Action.EXECUTE),
+    ("GET", "/projections/status"): (ResourceType.PROJECTION, Action.READ),
+    ("GET", "/projections/summary"): (ResourceType.PROJECTION, Action.READ),
+    ("GET", "/projections/accounts"): (ResourceType.PROJECTION, Action.LIST),
+    ("POST", "/provider-connections"): (
+        ResourceType.PROVIDER_CONNECTION,
+        Action.CREATE,
+    ),
+    ("GET", "/provider-connections"): (ResourceType.PROVIDER_CONNECTION, Action.LIST),
+    ("GET", "/provider-connections/{connection_id}"): (
+        ResourceType.PROVIDER_CONNECTION,
+        Action.READ,
+    ),
+    ("GET", "/provider-connections/{connection_id}/sync-checkpoint"): (
+        ResourceType.PROVIDER_CONNECTION,
+        Action.READ,
+    ),
+    ("GET", "/provider-connections/{connection_id}/sync-pages"): (
+        ResourceType.PROVIDER_CONNECTION,
+        Action.LIST,
+    ),
+    ("POST", "/provider-connections/{connection_id}/external-transactions"): (
+        ResourceType.EXTERNAL_TRANSACTION,
+        Action.CREATE,
+    ),
+    ("GET", "/provider-connections/{connection_id}/external-transactions"): (
+        ResourceType.EXTERNAL_TRANSACTION,
+        Action.LIST,
+    ),
+    (
+        "GET",
+        "/provider-connections/{connection_id}/external-transactions/"
+        "{transaction_record_id}/evidence",
+    ): (ResourceType.EXTERNAL_TRANSACTION, Action.READ),
+    (
+        "POST",
+        "/provider-connections/{connection_id}/external-transactions/"
+        "{transaction_record_id}/normalizations",
+    ): (ResourceType.EXTERNAL_TRANSACTION, Action.EXECUTE),
+    (
+        "GET",
+        "/provider-connections/{connection_id}/external-transactions/"
+        "{transaction_record_id}/interpretation",
+    ): (ResourceType.EXTERNAL_TRANSACTION, Action.READ),
+    (
+        "GET",
+        "/provider-connections/{connection_id}/external-transactions/"
+        "{transaction_record_id}/lifecycle",
+    ): (ResourceType.EXTERNAL_TRANSACTION, Action.READ),
+    (
+        "POST",
+        "/provider-connections/{connection_id}/external-transactions/"
+        "{transaction_record_id}/classification",
+    ): (ResourceType.EXTERNAL_TRANSACTION, Action.UPDATE),
+    (
+        "POST",
+        "/provider-connections/{connection_id}/external-transactions/"
+        "{transaction_record_id}/confirm",
+    ): (ResourceType.EXTERNAL_TRANSACTION, Action.UPDATE),
+}
+
+EXPECTED_PUBLIC_ROUTES = {
+    ("GET", "/"),
+    ("GET", "/demo"),
+    ("POST", "/auth/register"),
+    ("POST", "/auth/login"),
+    ("GET", "/health/live"),
+    ("GET", "/health/ready"),
+}
+EXPECTED_METRICS_ROUTES = {("GET", "/observability/metrics")}
 
 
 @pytest.fixture(autouse=True)
@@ -87,6 +188,36 @@ def _dependency_names(route):
     return names
 
 
+def _assert_route_contract(policies, route_keys):
+    expected_owner_keys = set(EXPECTED_OWNER_ROUTE_CONTRACT)
+    expected_keys = (
+        expected_owner_keys | EXPECTED_PUBLIC_ROUTES | EXPECTED_METRICS_ROUTES
+    )
+    assert set(route_keys) == expected_keys, (
+        f"route inventory mismatch; missing={expected_keys - set(route_keys)}, "
+        f"unexpected={set(route_keys) - expected_keys}"
+    )
+    assert set(policies) == expected_keys, (
+        f"policy inventory mismatch; missing={expected_keys - set(policies)}, "
+        f"unexpected={set(policies) - expected_keys}"
+    )
+
+    for key, expected in EXPECTED_OWNER_ROUTE_CONTRACT.items():
+        policy = policies[key]
+        assert policy.access is Access.OWNER, key
+        assert (policy.resource, policy.action) == expected, key
+
+    for key in EXPECTED_PUBLIC_ROUTES:
+        policy = policies[key]
+        assert policy.access is Access.PUBLIC, key
+        assert policy.resource is None and policy.action is None, key
+
+    for key in EXPECTED_METRICS_ROUTES:
+        policy = policies[key]
+        assert policy.access is Access.METRICS_TOKEN, key
+        assert policy.resource is None and policy.action is None, key
+
+
 def test_every_route_declares_a_policy_and_is_guarded_accordingly():
     undeclared, unguarded = [], []
     seen = set()
@@ -106,6 +237,34 @@ def test_every_route_declares_a_policy_and_is_guarded_accordingly():
     assert not undeclared, f"routes without policy: {undeclared}"
     assert not unguarded, f"routes whose guard disagrees with policy: {unguarded}"
     assert set(ROUTE_POLICIES) == seen, "policy table has stale entries"
+
+
+def test_independent_route_contract_matches_policies_and_route_inventory():
+    route_keys = {
+        key
+        for route in _all_routes()
+        for key in _route_keys(route)
+    }
+    assert len(EXPECTED_OWNER_ROUTE_CONTRACT) == 35
+    _assert_route_contract(ROUTE_POLICIES, route_keys)
+
+
+def test_route_contract_rejects_incorrect_resource_or_action_declaration():
+    route_key = ("GET", "/accounts")
+    incorrect_policies = dict(ROUTE_POLICIES)
+    incorrect_policies[route_key] = RoutePolicy(
+        Access.OWNER,
+        ResourceType.ACCOUNT,
+        Action.READ,
+    )
+
+    route_keys = {
+        key
+        for route in _all_routes()
+        for key in _route_keys(route)
+    }
+    with pytest.raises(AssertionError, match="GET', '/accounts"):
+        _assert_route_contract(incorrect_policies, route_keys)
 
 
 def test_router_level_guard_is_declared_on_owner_scoped_routers():

@@ -91,7 +91,7 @@
       </main>
     </div>
   </div>
-    <div class="overlay open" id="login-modal" role="dialog" aria-modal="true" aria-labelledby="login-title"><div class="modal"><div class="modal-head"><div><div class="eyebrow">Personal Finance Platform</div><h2 id="login-title">Đăng nhập</h2></div></div><form id="login-form"><div class="form-grid"><div class="field"><label for="login-email">Email</label><input id="login-email" type="email" autocomplete="username" required/></div><div class="field"><label for="login-password">Mật khẩu</label><input id="login-password" type="password" autocomplete="current-password" required/></div></div><div id="login-error" role="alert" style="color:#d25a72;margin:10px 0;min-height:18px"></div><div class="modal-actions"><button class="primary" id="login-submit" type="submit">Đăng nhập</button></div></form></div></div>
+    <div class="overlay open" id="login-modal" role="dialog" aria-modal="true" aria-labelledby="login-title"><div class="modal"><div class="modal-head"><div><div class="eyebrow">Personal Finance Platform</div><h2 id="login-title">Đăng nhập</h2></div></div><form id="login-form"><div class="form-grid"><div class="field"><label for="login-email">Email</label><input id="login-email" type="email" autocomplete="username" required/></div><div class="field"><label for="login-password">Mật khẩu</label><input id="login-password" type="password" autocomplete="current-password" required/></div></div><div id="login-error" role="alert" style="color:#d25a72;margin:10px 0;min-height:18px"></div><div class="modal-actions"><button class="primary" id="login-submit" type="submit">Đăng nhập</button><button class="secondary" id="keycloak-login" type="button">Đăng nhập với Keycloak</button></div></form></div></div>
   <div class="overlay" id="detail-modal" role="dialog" aria-modal="true" aria-labelledby="detail-title"><div class="modal"><div class="modal-head"><div><div class="eyebrow">Event detail · illustrative</div><h2 id="detail-title">Chi tiết financial event</h2></div><button class="icon-button" data-close aria-label="Đóng">×</button></div><div id="detail-content"></div><div class="modal-actions"><button class="secondary" data-close>Đóng</button></div></div></div>
   <div class="toast" id="toast" role="status"></div>
   <script>
@@ -107,6 +107,98 @@
     const formatDate = d => { const v = new Date(d); return isNaN(v) ? '—' : v.toLocaleDateString('vi-VN',{day:'2-digit',month:'2-digit',year:'numeric'}); };
     const escapeHtml = s => String(s ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     const $ = id => document.getElementById(id);
+
+    // Keycloak OIDC Authorization Code + PKCE (local development only).
+    const OIDC = {
+      issuer: 'http://localhost:8081/realms/pfp-dev',
+      clientId: 'moneta',
+      redirectUri: 'http://127.0.0.1:8765/demo'
+    };
+    const OIDC_PENDING = 'moneta.oidc.pkce.v1';
+
+    function base64url(bytes) {
+      let binary = '';
+      for (const byte of new Uint8Array(bytes)) binary += String.fromCharCode(byte);
+      return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+    }
+
+    function randomBase64url() {
+      return base64url(crypto.getRandomValues(new Uint8Array(32)));
+    }
+
+    async function loginWithKeycloak() {
+      const state = randomBase64url();
+      const verifier = randomBase64url();
+      const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
+      const challenge = base64url(digest);
+
+      sessionStorage.setItem(OIDC_PENDING, JSON.stringify({state, verifier, createdAt: Date.now()}));
+      const url = new URL(OIDC.issuer + '/protocol/openid-connect/auth');
+      url.search = new URLSearchParams({
+        client_id: OIDC.clientId,
+        response_type: 'code',
+        redirect_uri: OIDC.redirectUri,
+        scope: 'openid profile email',
+        state,
+        code_challenge: challenge,
+        code_challenge_method: 'S256'
+      }).toString();
+      window.location.assign(url.toString());
+    }
+
+    async function handleOidcCallback() {
+      const url = new URL(window.location.href);
+      const code = url.searchParams.get('code');
+      const state = url.searchParams.get('state');
+      const error = url.searchParams.get('error');
+      const returnedIssuer = url.searchParams.get('iss');
+      if (!code && !state && !error) return;
+
+      // Remove one-time callback parameters immediately; don't leave codes in browser history.
+      for (const field of ['code', 'state', 'session_state', 'iss', 'error', 'error_description']) {
+        url.searchParams.delete(field);
+      }
+      history.replaceState(null, '', url.pathname + url.search + url.hash);
+
+      const raw = sessionStorage.getItem(OIDC_PENDING);
+      sessionStorage.removeItem(OIDC_PENDING);
+      if (!raw) throw new Error('Không tìm thấy phiên PKCE.');
+      const pending = JSON.parse(raw);
+      if (!state || state !== pending.state || !Number.isFinite(pending.createdAt)
+          || Date.now() < pending.createdAt || Date.now() - pending.createdAt > 300000) {
+        throw new Error('OIDC state không hợp lệ hoặc đã hết hạn.');
+      }
+      if (returnedIssuer && returnedIssuer !== OIDC.issuer) {
+        throw new Error('OIDC callback issuer không hợp lệ.');
+      }
+      if (error) throw new Error('Keycloak: ' + error);
+      if (!code) throw new Error('Keycloak không trả về authorization code.');
+
+      const response = await fetch(OIDC.issuer + '/protocol/openid-connect/token', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: new URLSearchParams({
+          grant_type: 'authorization_code',
+          client_id: OIDC.clientId,
+          code,
+          redirect_uri: OIDC.redirectUri,
+          code_verifier: pending.verifier
+        })
+      });
+      if (!response.ok) throw new Error('Không thể đổi authorization code (HTTP ' + response.status + ').');
+      const tokens = await response.json();
+      if (typeof tokens.access_token !== 'string' || !tokens.access_token) {
+        throw new Error('Keycloak không trả về access token.');
+      }
+
+      // Existing api() attaches this bearer token to every protected PFP request.
+      token = tokens.access_token;
+      const me = await api('/auth/me'); // Backend validates signature, issuer, audience and identity mapping.
+      $('who').textContent = me.email || 'Keycloak user';
+      $('login-modal').classList.remove('open');
+      await loadAll();
+    }
+
     const labels = {income:'Thu nhập',expense:'Chi tiêu'};
     const icons = {income:'↙',expense:'↗'};
     const state = (cls, msg) => `<div class="${cls}" role="status">${escapeHtml(msg)}</div>`;
@@ -252,7 +344,15 @@
         transactions = res.data; txTotal = res.total; renderTransactions();
       } catch (err) { $('transactions-body').innerHTML = `<tr><td colspan="6" class="empty">Lỗi: ${escapeHtml(err.message)}</td></tr>`; }
     });
+    $('keycloak-login').addEventListener('click', async () => {
+      try {
+        await loginWithKeycloak();
+      } catch (err) {
+        $('login-error').textContent = err.message;
+      }
+    });
     logout('');
+    handleOidcCallback().catch(err => logout('Đăng nhập Keycloak thất bại: ' + err.message));
   </script>
 </body>
 </html>
