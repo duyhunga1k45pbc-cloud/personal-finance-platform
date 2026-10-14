@@ -118,7 +118,7 @@
     const OIDC = {
       issuer: 'http://localhost:8081/realms/pfp-dev',
       clientId: 'moneta',
-      redirectUri: 'http://127.0.0.1:8765/demo'
+      redirectUri: window.location.origin + '/demo'
     };
     const OIDC_PENDING = 'moneta.oidc.pkce.v1';
 

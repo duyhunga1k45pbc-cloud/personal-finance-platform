@@ -207,6 +207,7 @@ ROUTE_POLICIES: dict[tuple[str, str], RoutePolicy] = {
     ("POST", "/auth/register"): _PUBLIC,
     ("POST", "/auth/login"): _PUBLIC,
     ("GET", "/auth/me"): _owner(ResourceType.USER, Action.READ),
+    ("POST", "/internal/gateway/authorize"): _owner(ResourceType.USER, Action.EXECUTE),
     ("GET", "/health/live"): _PUBLIC,
     ("GET", "/health/ready"): _PUBLIC,
     ("GET", "/observability/metrics"): RoutePolicy(Access.METRICS_TOKEN),

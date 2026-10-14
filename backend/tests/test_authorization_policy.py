@@ -23,6 +23,7 @@ from app.routers import (
     accounts,
     auth,
     causal_events,
+    gateway_authz,
     observability,
     projections,
     providers,
@@ -45,6 +46,7 @@ ROUTERS = [
     observability.router,
     projections.router,
     providers.router,
+    gateway_authz.router,
 ]
 
 # Independently reviewed route contract. Keep this explicit rather than
@@ -52,6 +54,7 @@ ROUTERS = [
 EXPECTED_OWNER_ROUTE_CONTRACT = {
     ("GET", "/summary"): (ResourceType.SUMMARY, Action.READ),
     ("GET", "/auth/me"): (ResourceType.USER, Action.READ),
+    ("POST", "/internal/gateway/authorize"): (ResourceType.USER, Action.EXECUTE),
     ("GET", "/accounts"): (ResourceType.ACCOUNT, Action.LIST),
     ("POST", "/accounts"): (ResourceType.ACCOUNT, Action.CREATE),
     ("GET", "/accounts/{account_id}"): (ResourceType.ACCOUNT, Action.READ),
@@ -245,7 +248,7 @@ def test_independent_route_contract_matches_policies_and_route_inventory():
         for route in _all_routes()
         for key in _route_keys(route)
     }
-    assert len(EXPECTED_OWNER_ROUTE_CONTRACT) == 35
+    assert len(EXPECTED_OWNER_ROUTE_CONTRACT) == 36
     _assert_route_contract(ROUTE_POLICIES, route_keys)
 
 

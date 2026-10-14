@@ -10,6 +10,10 @@ from jose import JWTError, jwt
 
 
 OIDC_ISSUER = os.getenv("OIDC_ISSUER", "").rstrip("/")
+OIDC_JWKS_URL = os.getenv(
+    "OIDC_JWKS_URL",
+    f"{OIDC_ISSUER}/protocol/openid-connect/certs",
+)
 OIDC_AUDIENCE = os.getenv("OIDC_AUDIENCE", "pfp-api")
 OIDC_CLIENT_ID = os.getenv("OIDC_CLIENT_ID", "moneta")
 
@@ -36,10 +40,7 @@ def _get_jwks(*, refresh: bool = False) -> list[dict]:
         now = time.monotonic()
 
         if refresh or now >= _jwks_cache["expires_at"]:
-            url = (
-                f"{OIDC_ISSUER}"
-                "/protocol/openid-connect/certs"
-            )
+            url = OIDC_JWKS_URL
 
             with urlopen(url, timeout=3) as response:
                 document = json.load(response)

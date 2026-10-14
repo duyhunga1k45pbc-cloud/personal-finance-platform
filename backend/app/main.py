@@ -112,6 +112,7 @@ async def observe_request(request: Request, call_next):
         )
         reset_request_id(token)
 
+from app.routers.gateway_authz import router as gateway_authz_router
 app.include_router(auth.router)
 app.include_router(accounts.router)
 app.include_router(transactions.router)
@@ -121,6 +122,7 @@ app.include_router(reconciliations.router)
 app.include_router(observability.router)
 app.include_router(projections.router)
 app.include_router(providers.router)
+app.include_router(gateway_authz_router)
 assert_only_policed_routes(app)
 
 
