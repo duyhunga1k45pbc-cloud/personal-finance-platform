@@ -98,6 +98,12 @@
     'use strict';
     // Live demo: every figure comes from the FastAPI backend. The token lives in memory only.
     let token = null;
+    let authSource = null; // 'local' or 'keycloak'
+    let oidcIdToken = null; // in-memory only; used as an RP-Initiated Logout hint
+    let oidcRefreshToken = null; // in-memory only; not persisted
+    let oidcAccessExpiresAt = 0; // epoch milliseconds
+    let oidcRefreshPromise = null; // one in-flight refresh for concurrent API calls
+    let oidcSessionGeneration = 0; // prevents late refresh from resurrecting a logged-out session
     let accounts = [];
     let transactions = [];
     let txTotal = 0;
@@ -193,6 +199,18 @@
 
       // Existing api() attaches this bearer token to every protected PFP request.
       token = tokens.access_token;
+      authSource = 'keycloak';
+      oidcIdToken = typeof tokens.id_token === 'string' ? tokens.id_token : null;
+      // A successful new login invalidates the state of any prior refresh.
+      oidcSessionGeneration += 1;
+      oidcRefreshPromise = null;
+      const expiresIn = Number(tokens.expires_in);
+      if (!Number.isFinite(expiresIn) || expiresIn <= 0 ||
+          typeof tokens.refresh_token !== 'string' || !tokens.refresh_token) {
+        throw new Error('Keycloak không cấp thông tin cần thiết để refresh phiên.');
+      }
+      oidcRefreshToken = tokens.refresh_token;
+      oidcAccessExpiresAt = Date.now() + expiresIn * 1000;
       const me = await api('/auth/me'); // Backend validates signature, issuer, audience and identity mapping.
       $('who').textContent = me.email || 'Keycloak user';
       $('login-modal').classList.remove('open');
@@ -204,7 +222,78 @@
     const state = (cls, msg) => `<div class="${cls}" role="status">${escapeHtml(msg)}</div>`;
 
     class ApiError extends Error { constructor(status, detail){ super(detail); this.status = status; } }
+    async function ensureFreshOidcAccessToken() {
+      if (authSource !== 'keycloak' || !token) return;
+      // Refresh 30 seconds ahead of expiry. An idle tab does not renew endlessly;
+      // its next API operation triggers refresh, or fails closed if SSO expired.
+      if (Date.now() + 30_000 < oidcAccessExpiresAt) return;
+      if (oidcRefreshPromise) return oidcRefreshPromise;
+
+      const generation = oidcSessionGeneration;
+      const refreshToken = oidcRefreshToken;
+      if (!refreshToken) {
+        logout('Phiên Keycloak đã hết hạn. Vui lòng đăng nhập lại.');
+        throw new Error('OIDC refresh token unavailable');
+      }
+
+      oidcRefreshPromise = (async () => {
+        try {
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 8000);
+          let response;
+          try {
+            response = await fetch(OIDC.issuer + '/protocol/openid-connect/token', {
+              method: 'POST',
+              signal: controller.signal,
+              headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+              body: new URLSearchParams({
+                grant_type: 'refresh_token',
+                client_id: OIDC.clientId,
+                refresh_token: refreshToken
+              })
+            });
+          } finally {
+            clearTimeout(timeout);
+          }
+          if (!response.ok) throw new Error('Refresh token rejected (HTTP ' + response.status + ')');
+          const updated = await response.json();
+          const expiresIn = Number(updated.expires_in);
+          if (typeof updated.access_token !== 'string' || !updated.access_token ||
+              typeof updated.refresh_token !== 'string' || !updated.refresh_token ||
+              !Number.isFinite(expiresIn) || expiresIn <= 0) {
+            throw new Error('Invalid Keycloak refresh response');
+          }
+
+          // A logout or a new login may have happened while fetch was pending.
+          if (oidcSessionGeneration !== generation || authSource !== 'keycloak') {
+            throw new Error('OIDC session changed during refresh');
+          }
+
+          // Respect refresh-token rotation: immediately replace the old token.
+          token = updated.access_token;
+          oidcRefreshToken = updated.refresh_token;
+          oidcAccessExpiresAt = Date.now() + expiresIn * 1000;
+          if (typeof updated.id_token === 'string' && updated.id_token) {
+            oidcIdToken = updated.id_token;
+          }
+        } catch (error) {
+          if (oidcSessionGeneration === generation && authSource === 'keycloak') {
+            logout('Không thể gia hạn phiên Keycloak. Vui lòng đăng nhập lại.');
+          }
+          throw error;
+        } finally {
+          if (oidcSessionGeneration === generation) oidcRefreshPromise = null;
+        }
+      })();
+      return oidcRefreshPromise;
+    }
+
     async function api(path, opts = {}) {
+      // Automatic on-demand refresh, before any protected API request.
+      // Never replay non-idempotent financial commands after a 401.
+      if (authSource === 'keycloak' && token) {
+        await ensureFreshOidcAccessToken();
+      }
       const headers = {...(opts.headers||{})};
       if (token) headers.Authorization = 'Bearer ' + token;
       const ctrl = new AbortController();
@@ -295,8 +384,30 @@
       else { $('kpi-grid').innerHTML = setError('summary', sum.reason); }
     }
 
+    function signOutWithKeycloak() {
+      const wasKeycloak = authSource === 'keycloak';
+      const idTokenHint = oidcIdToken;
+
+      // Clear the browser-side session first, including on navigation failure.
+      logout('');
+      sessionStorage.removeItem(OIDC_PENDING);
+      if (!wasKeycloak) return; // Local JWT needs local logout only.
+
+      // RP-Initiated Logout: terminates the Keycloak browser SSO session.
+      const endSession = new URL(OIDC.issuer + '/protocol/openid-connect/logout');
+      endSession.searchParams.set('client_id', OIDC.clientId);
+      endSession.searchParams.set('post_logout_redirect_uri', OIDC.redirectUri);
+      if (idTokenHint) endSession.searchParams.set('id_token_hint', idTokenHint);
+      window.location.assign(endSession.toString());
+    }
+
     function logout(message){
-      token = null; accounts = []; transactions = []; summary = null; balances = null;
+      oidcSessionGeneration += 1; // invalidate any in-flight refresh response
+      token = null; authSource = null; oidcIdToken = null;
+      oidcRefreshToken = null;
+      oidcAccessExpiresAt = 0;
+      oidcRefreshPromise = null;
+      accounts = []; transactions = []; summary = null; balances = null;
       ['kpi-grid','accounts-grid','recent-body','transactions-body','acct-legend','reco-result'].forEach(id=>$(id).innerHTML='');
       $('login-error').textContent = message || '';
       $('login-password').value = '';
@@ -309,6 +420,8 @@
       try {
         const res = await api('/auth/login', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({email:$('login-email').value.trim(), password:$('login-password').value})});
         token = res.access_token;
+        authSource = 'local';
+        oidcIdToken = null;
         $('login-password').value = '';
         $('who').textContent = $('login-email').value.trim();
         $('login-modal').classList.remove('open');
@@ -317,7 +430,7 @@
         $('login-error').textContent = err.status === 401 ? 'Email hoặc mật khẩu không đúng.' : err.message;
       } finally { btn.disabled = false; }
     });
-    $('logout-btn').addEventListener('click', ()=>logout(''));
+    $('logout-btn').addEventListener('click', signOutWithKeycloak);
     $('reco-form').addEventListener('submit', async e=>{
       e.preventDefault();
       const id = parseInt($('reco-id').value, 10);
