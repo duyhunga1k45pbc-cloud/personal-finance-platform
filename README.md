@@ -1,10 +1,10 @@
 # Personal Finance Platform
 
-**A correctness-focused financial backend engineering case study built with FastAPI, PostgreSQL, and SQLAlchemy.**
+**A correctness-focused financial backend engineering case study built with FastAPI, PostgreSQL, and SQLAlchemy, with a focused Kong and Keycloak OIDC gateway pilot.**
 
 This project explores how financial state can remain consistent and recoverable when requests retry, concurrent operations conflict, transactions fail, external evidence disagrees, or execution conditions change.
 
-The backend implements financial event modeling, transaction and concurrency controls, idempotent commands, reconciliation, recovery tooling, authorization, and optional Redis caching. The repository includes PostgreSQL-backed integration tests, failure-injection scenarios, and performance measurements for selected operations.
+The backend implements financial event modeling, transaction and concurrency controls, idempotent commands, reconciliation, recovery tooling, authorization, and optional Redis caching. A focused Kong Gateway integration uses Keycloak OIDC authentication and external authorization while retaining FastAPI ownership checks. The repository includes PostgreSQL-backed integration tests, gateway and full-stack E2E tests, failure-injection scenarios, and performance measurements for selected operations.
 
 **Project status:** Engineering portfolio and experimental application. Not production-deployed.
 
@@ -21,15 +21,15 @@ The backend implements financial event modeling, transaction and concurrency con
 | Reconciliation            | Explicit handling of conflicting and incomplete external evidence                                                                         |
 | Recovery                  | Rebuildable projections, canonical-state audits, backup/restore exercises                                                                 |
 | Failure injection         | Commit acknowledgment loss, worker termination, deadlocks, connection-pool exhaustion, Redis failures and deterministic stale-cache races |
-| Security                  | JWT authentication, declared route policies, SQL ownership scoping, short-lived auth sessions                                             |
+| Security                  | Keycloak OIDC/JWT authentication, Kong JWT and external AuthZ pilot, FastAPI route policies and SQL ownership scoping                       |
 | Schema evolution          | Alembic migrations, rollback verification, historical backfill, revision compatibility checks                                             |
 | Async correctness         | SQLAlchemy AsyncSession, cancellation, connection lifecycle, native-async experiments                                                     |
 | Cache correctness         | PostgreSQL-revisioned Redis keys, ownership-before-cache checks, 15 reported fault-injection tests including a vulnerable counterfactual  |
 | Read performance          | N+1 removal, PostgreSQL-revisioned Redis cache, query-plan analysis and controlled benchmarks                                             |
 | Query correctness         | Deterministic transaction pagination and a measured composite-index optimization (merged to `main` in PR #6 on 2026-10-12)                |
-| Demo                      | Moneta read-only web interface over existing authenticated FastAPI APIs                                                                   |
+| Demo                      | Moneta read-only web interface with six static Engineering cards over existing authenticated FastAPI APIs                                  |
 
-**Latest reported local regression:** **328 passed, 0 failed, 0 skipped**, using PostgreSQL and real Redis integration tests. This includes **15 newly reported Redis fault-injection tests** in `backend/tests/test_redis_fault_injection_correctness.py`. These are agent-reported local execution results, not independent verification or a claim about the latest GitHub Actions run; see [Test Results and Coverage](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#test-results-and-coverage).
+**Latest reported local regression:** **328 passed, 0 failed, 0 skipped**, using PostgreSQL and real Redis integration tests. This includes **15 newly reported Redis fault-injection tests** in `backend/tests/test_redis_fault_injection_correctness.py`. These are agent-reported local execution results, not independently rerun here; see [Test Results and Coverage](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#test-results-and-coverage) for separate commit-specific GitHub Actions results.
 
 The verification applies to the scenarios exercised by the tests. It does not establish exhaustive correctness or production readiness.
 
@@ -244,6 +244,10 @@ The application is implemented as a **modular monolith**.
 
 Its design keeps financial business rules and transaction boundaries explicit without introducing distributed infrastructure that is unnecessary for the project's current scope.
 
+Kong Gateway and Keycloak are external integration components around the
+financial backend; they do not split its business modules into independently
+deployed financial services. The backend remains a modular monolith.
+
 The main responsibilities are separated into:
 
 | **Component**             | **Responsibility**                                                                  |
@@ -385,7 +389,11 @@ This reduces dependence on projections as independent sources of financial truth
 
 ### 7. Security Boundaries
 
-The application implements JWT-based authentication and user-scoped authorization.
+Authentication establishes a verified caller identity; authorization decides
+which operation that identity may perform. The backend implements JWT-based
+authentication and user-scoped authorization. The gateway adds a separate,
+focused enforcement boundary and does not replace backend authentication or
+ownership checks.
 
 Security verification includes:
 
@@ -396,7 +404,8 @@ Security verification includes:
 - Unauthorized cross-user modifications
 - Ownership checks on financial resources
 
-The application does not claim to provide a complete OAuth2/OIDC identity platform or a shared multi-service authorization framework.
+The application does not claim to provide a complete OAuth2/OIDC identity
+platform or a shared multi-service authorization framework.
 
 #### Authorization architecture
 
@@ -417,6 +426,31 @@ Boundaries of this enforcement:
 The public `GET /demo` page is also declared in `ROUTE_POLICIES`; the HTML shell is public, but every data API it calls remains independently authenticated and authorized.
 
 See `backend/SECURITY_V1.md` for details. Verification is PostgreSQL-backed (`backend/tests/test_authorization_policy.py`): cross-user reads and writes with no database side effects, nested-resource checks, pagination and aggregation isolation, policy-change tests, and query-count and connection-checkout baselines.
+
+#### Gateway authentication and authorization pilot
+
+Keycloak acts as the OIDC identity provider and issues access tokens. FastAPI
+validates the token signature and the configured issuer, audience, expiry and
+client identity, then maps the verified issuer and subject to a local user.
+FastAPI remains responsible for its declared route policies and SQL-scoped
+ownership enforcement.
+
+Kong is the gateway boundary: its JWT plugin verifies the configured RS256
+signing key and token expiry before proxying. On the `/accounts` pilot route,
+the external authorization plugin calls FastAPI's authorization service; the
+current policy permits reads and denies writes. This gateway decision is
+additional to the backend's own authentication and ownership checks, not a
+substitute for them. The external authorization policy is intentionally
+limited to this pilot resource, not a general policy service.
+
+The gateway-only Compose deployment does not publish the FastAPI service on a
+host port; the standalone backend Compose file retains its development port
+mapping. Kong's signing key is configured statically and must be rotated
+manually; gateway JWT verification does not dynamically follow Keycloak JWKS
+rotation. The legacy public login and registration routes are intentionally
+unavailable through Kong. These are focused integration boundaries, not an
+organization-wide authorization platform. See `gateway/README.md` for the
+deployment boundary, route scope and manual rotation procedure.
 
 ### 8. Schema Evolution Safety
 
@@ -449,12 +483,38 @@ The repository includes unit, integration, concurrency, failure-injection, and e
 | Full local suite (reported)            | **328 passed, 0 failed, 0 skipped**                                                          |
 | Redis fault-injection focus (reported) | **15 passed**                                                                                |
 | Cache suites combined (reported)       | **32 passed**                                                                                |
+| Kong authorization integration (local) | **8 passed**, including timeout, connection failure, malformed response, and HTTP 500 denial  |
+| Gateway full-stack E2E (local)          | **2 passed**: deployment-config parity and authenticated-read/denied-write database check     |
 | Database                               | Disposable PostgreSQL migrated to Alembic head                                               |
 | Cache tests                            | Real Redis integration included                                                              |
-| Source of results                      | Development-agent local execution report; not independently rerun for this README edit       |
-| GitHub CI for the 328-test revision    | **Not verified here**; check the commit-specific GitHub Actions run before claiming green CI |
+| Source of results                      | Local execution reports; the 328-test result was not independently rerun for this README edit |
+| CI mapping for the 328-test count      | **Not tied to a verified commit**; commit-specific workflow outcomes are listed below       |
 
-The reported results were obtained in a local verification environment. They do not imply successful production deployment or universal coverage of runtime failure modes.
+The 328-test, Redis and combined-cache results are previously reported local
+results; the gateway results are separate focused local runs and are not part
+of that count. Local execution does not imply successful production deployment
+or universal coverage of runtime failure modes.
+
+### Commit-Specific GitHub Actions Evidence
+
+The following workflow runs were checked against their full commit SHAs:
+
+| **Commit** | **Workflow** | **Result and scope** |
+| ---------- | ------------ | -------------------- |
+| [`4292cb2`](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/commit/4292cb2ce5a41f2f95c768e8e6f46fd38ea7ed22) | [Kong Authorization Integration Tests](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/actions/runs/38627335128) | Passed; built the Kong plugin image, ran the authorization integration test file, and verified container cleanup. |
+| [`4292cb2`](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/commit/4292cb2ce5a41f2f95c768e8e6f46fd38ea7ed22) | [Gateway Full-Stack E2E](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/actions/runs/38627335082) | Passed; started PostgreSQL and Keycloak, generated Kong configuration, started the application stack, ran E2E, and cleaned up. |
+| [`4292cb2`](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/commit/4292cb2ce5a41f2f95c768e8e6f46fd38ea7) | [Backend CI](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/actions/runs/38627335087) | Passed; database migration, trigger and Redis checks, cache integration tests, and full backend regression suite completed. |
+| [`27bb173`](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/commit/27bb1738f23ec7fbb86d2a3e6bc5b6f9a485eff1) | [Gateway Full-Stack E2E](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/actions/runs/38627652857) | Passed; full-stack E2E ran after the Engineering demo update. |
+| [`27bb173`](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/commit/27bb1738f23ec7fbb86d2a3e6bc5b6f9a485eff1) | [Backend CI](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/actions/runs/38627653437) | Passed; database migration, trigger and Redis checks, cache integration tests, and full backend regression suite completed. The dedicated Kong integration workflow was not run for this commit. |
+
+The dedicated Kong integration workflow covers fail-closed behavior for
+external-authorization timeout, connection failure, malformed responses and HTTP
+500. The full-stack E2E checks an authenticated account read and a denied
+account write, then verifies that the database snapshot did not change. It
+also compares the generated E2E Kong configuration with the deployment
+configuration after normalizing the test API address and test-realm signing
+key. Passing these workflows is evidence for those configured scenarios, not
+production deployment or exhaustive security correctness.
 
 ### Verification Coverage
 
@@ -467,6 +527,7 @@ The reported results were obtained in a local verification environment. They do 
 | Provider integration    | Evidence handling, lifecycle state, checkpoints, reconciliation                                                 |
 | Derived state           | Projection rebuilding and canonical consistency                                                                 |
 | Security                | JWT validation, ownership, cross-user authorization                                                             |
+| Gateway authorization  | Kong JWT checks, external AuthZ fail-closed responses, authenticated read and denied-write E2E with DB non-mutation |
 | Runtime failures        | Response loss, worker termination, pool exhaustion, deadlocks                                                   |
 | Recovery                | Backup/restore, projection reconstruction, canonical audits                                                     |
 | Deployment              | Preflight checks, revision compatibility, readiness, graceful shutdown                                          |
@@ -572,12 +633,16 @@ Moneta is a lightweight **HTML/CSS/JavaScript interface** served at `GET /demo`.
 
 | **Screen**     | **Data source**                              | **V1 boundary**                                                                 |
 | -------------- | -------------------------------------------- | ------------------------------------------------------------------------------- |
-| Login          | `POST /auth/login`                           | Existing account required; no hard-coded demo identity                          |
+| Login          | Keycloak OIDC Authorization Code + PKCE      | Legacy `POST /auth/login` and `POST /auth/register` are unavailable through Kong |
 | Dashboard      | `GET /summary`                               | Shows current API summary, not all canonical projections                        |
 | Accounts       | `GET /accounts`, `GET /projections/accounts` | Missing projections are shown explicitly, not fabricated                        |
 | Transactions   | `GET /transactions`                          | Read-only; first 100 **oldest-by-ID** results under the merged Phase A ordering |
 | Reconciliation | `GET /reconciliations/{id}`                  | Lookup by ID; no listing endpoint                                               |
-| Engineering    | Static explanation                           | Not a live operations console                                                   |
+| Engineering    | Six static cards                           | Not a live operations console              |
+
+The Engineering cards are **Canonical financial state**, **Idempotency &
+concurrency**, **Append-only history**, **Reconciliation**, **API Security &
+Authorization**, and **Reliability & Verification**.
 
 The browser keeps JWTs **only in memory**; logout clears displayed personal data. API errors yield visible error/empty states instead of a fake-data fallback. The UI intentionally does not initiate financial writes in v1.
 
@@ -595,8 +660,9 @@ The browser keeps JWTs **only in memory**; logout clears displayed personal data
 | Database                       | PostgreSQL                                                     |
 | ORM                            | SQLAlchemy                                                     |
 | Schema migrations              | Alembic                                                        |
-| Authentication / authorization | JWT, declarative route policy, short-lived immutable Principal |
-| Testing                        | pytest, PostgreSQL and Redis integration tests                 |
+| Authentication / authorization | Keycloak OIDC/JWT, Kong JWT and external AuthZ pilot, FastAPI route policy and ownership enforcement |
+| Gateway integration            | Kong Gateway; Keycloak as external OIDC identity provider      |
+| Testing                        | pytest, PostgreSQL and Redis integration tests, Kong authorization integration, full-stack E2E |
 | Async verification             | asyncio, AsyncSession, asyncpg                                 |
 | Application server             | Uvicorn                                                        |
 | CI configuration               | GitHub Actions                                                 |
@@ -699,6 +765,7 @@ The current work does not establish:
 - A fully native-async production application
 - A distributed financial event-processing platform
 - Complete OAuth2/OIDC or organization-wide authorization infrastructure
+- Production operation of the Kong/Keycloak integration, automatic Kong JWKS rotation, or a zero-downtime key-rotation guarantee
 - Production-grade performance, availability, or operational readiness
 - Reliable cache hit rates under unknown real-world workloads
 - Pagination for extremely large provider listing histories
@@ -709,5 +776,11 @@ The current work does not establish:
 Some guarantees also depend on application write paths following shared locking and transaction conventions. Direct database writes or future code paths that bypass those conventions require separate verification.
 
 The public repository emphasizes implemented behavior, reproducible tests, documented engineering decisions, and explicit limitations. In particular, the Redis fault-injection results are evidence for **selected failures survived**, not a proof that Redis cannot contribute to future correctness defects.
+
+The gateway work is a focused `/accounts` authorization pilot. Kong's
+configured signing key is static, so key rotation requires a manual procedure;
+the integration is not evidence of production operation or an organization-wide
+authorization platform. See `gateway/README.md` for the supported route scope
+and rotation steps.
 
 **Development disclosure:** GitHub Copilot assisted with portions of implementation, test creation, and documentation.
