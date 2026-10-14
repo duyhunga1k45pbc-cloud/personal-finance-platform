@@ -43,7 +43,10 @@
           "value": "e2e-test-password",
           "temporary": false
         }
-      ]
+      ],
+      "firstName": "E2E",
+      "lastName": "Test",
+      "requiredActions": []
     }
   ]
 }
