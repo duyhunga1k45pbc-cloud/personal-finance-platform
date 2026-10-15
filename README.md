@@ -360,13 +360,13 @@ Kong Gateway and Keycloak are optional external integration components, not inde
 External Provider Evidence      Client Financial Commands
           |                                |
           v                                |
-   Identity / Deduplication               |
+   Identity / Deduplication                |
           |                                |
           v                                |
-     Normalization                        |
+     Normalization                         |
           |                                |
           v                                |
- Canonical Interpretation                 |
+ Canonical Interpretation                  |
           |                                |
           +---------------+----------------+
                           |
