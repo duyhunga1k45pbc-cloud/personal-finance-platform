@@ -1,0 +1,40 @@
+# Optional HTTP infrastructure lab: routing, request IDs, rate limiting, JWT.
+# No external authorization call. The upstream FastAPI still authenticates and
+# authorizes protected operations and scopes SQL access to the principal.
+# Do not run concurrently with compose.internal.yml: both bind 127.0.0.1:8004.
+services:
+  api:
+    image: pfp-api:local
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    env_file:
+      - ../backend/.local/api-container.env
+    expose:
+      - "8000"
+    networks:
+      backend_default:
+        aliases:
+          - pfp-api-compose
+    restart: "no"
+
+  kong:
+    image: kong:3.9.4
+    environment:
+      KONG_DATABASE: "off"
+      KONG_PROXY_LISTEN: "0.0.0.0:8000"
+      KONG_PLUGINS: "bundled"
+      KONG_DECLARATIVE_CONFIG: /etc/kong/kong-http.yml
+    ports:
+      - "127.0.0.1:8004:8000"
+    volumes:
+      - ./kong/kong-http.yml:/etc/kong/kong-http.yml:ro
+    networks:
+      - backend_default
+    depends_on:
+      - api
+    restart: "no"
+
+networks:
+  backend_default:
+    external: true
