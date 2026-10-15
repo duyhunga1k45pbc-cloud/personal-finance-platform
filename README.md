@@ -14,6 +14,23 @@ Security	FastAPI policy and resource ownership enforcement; optional Kong/Keyclo
 Verification	PostgreSQL and Redis integration tests; selected async experiments and gateway full-stack E2E
 Demo	Moneta read-only interface with six static Engineering cards
 
+**Project status:** Engineering portfolio and experimental application. Not production-deployed.
+
+**Quick navigation:** [Over-refund](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-preventing-concurrent-over-refunds) · [Redis revision cache](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-transaction-consistent-redis-caching) · [Connection pool RCA](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-connection-pool-starvation) · [Index & pagination](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-deterministic-pagination-and-postgresql-indexing) · [Moneta demo](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#moneta-demo-ui) · [Test results](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#test-results-and-coverage) · [Security & Authorization](#security-boundaries)
+
+## Engineering Highlights
+
+| **Area** | **Engineering evidence** |
+| --- | --- |
+| Financial correctness | PostgreSQL locking, idempotent commands, append-only history, reconciliation |
+| Cache consistency | PostgreSQL-revisioned Redis keys, ownership-before-cache checks, fault injection |
+| Query behavior | Deterministic pagination and a measured composite-index change |
+| Reliability | Connection-pool lifecycle, failure injection, recovery and migration checks |
+| Security | FastAPI ownership enforcement; optional Kong/Keycloak integration labs |
+| Verification | PostgreSQL and Redis integration tests; selected async experiments and gateway full-stack E2E |
+| Demo | Moneta read-only interface with six static Engineering cards |
+
+**Latest reported local backend suite:** **347 passed, 0 failed, 0 skipped in 136.83 seconds**, using PostgreSQL-backed tests and real Redis integration. This local run is not tied to a verified commit-specific CI run; CI evidence is listed separately under [Test Results and Coverage](#test-results-and-coverage).
 
 Latest reported local backend suite: 347 passed, 0 failed, 0 skipped in 136.83 seconds, using PostgreSQL-backed tests and real Redis integration. This local run is not tied to a verified commit-specific CI run; CI evidence is listed separately under Test Results and Coverage.
 The results apply to tested scenarios; they do not establish exhaustive correctness or production readiness.
@@ -188,18 +205,38 @@ Cross-cutting concerns include authentication, authorization, idempotency, concu
 The project does not claim to implement a production distributed event-processing platform.
 Core Engineering Properties
 Financial events and signed entries are the source for balances and summaries; projections can be rebuilt from canonical records. Commands use database-backed idempotency, expected-version checks and PostgreSQL locking. Reconciliation keeps external observations distinct from accepted financial state, surfacing stale, incomplete or conflicting evidence rather than silently treating it as authoritative. The refund case study shows where these mechanisms interact under concurrency.
-Security Boundaries
-Authentication identifies the caller; authorization limits operations to owned resources. The route-policy table and immutable Principal are implemented in backend/app/authorization.py and backend/app/routers/auth.py. SQL ownership predicates are applied before joins, counts, pagination and aggregation. Policies cover HTTP routes and are kept consistent with handlers by tests; ownership checks remain distributed through service queries. See backend/SECURITY_V1.md for the policy boundaries and PostgreSQL-backed cross-user tests.
-Kong and Keycloak are optional integration experiments, not prerequisites for financial state correctness. The Gateway Lab has two explicit modes:
-- HTTP Infrastructure Lab (gateway/compose.http.yml): Kong handles API routing, request correlation IDs, IP-based rate limiting, and JWT verification. It does not call the external authorization endpoint; FastAPI continues to enforce route authorization and SQL resource ownership.
-- External Authorization Lab (gateway/compose.internal.yml): Preserves the Kong external-authorization pilot, including fail-closed behavior and its route-specific policy experiment. This is not a reusable cross-service authorization platform.
-Both modes proxy to the FastAPI backend; neither changes financial transaction rules. Deployment, login-route scope, limitations and manual signing-key rotation are documented in gateway/README.md.
-Alembic verification covers transactional rollback, canonical-history backfill, readiness rejection of incompatible revisions, and concurrent index creation with downgrade and invalid-build recovery. Test databases reject the protected finance_db target, and production migrations require explicit authorization. These safeguards do not establish zero-downtime or rolling-upgrade compatibility.
-Test Results and Coverage
+
+### Security Boundaries
+
+Authentication identifies the caller; authorization limits operations to owned resources. The route-policy table and immutable `Principal` are implemented in `backend/app/authorization.py` and `backend/app/routers/auth.py`. SQL ownership predicates are applied before joins, counts, pagination and aggregation. Policies cover HTTP routes and are kept consistent with handlers by tests; ownership checks remain distributed through service queries. See [`backend/SECURITY_V1.md`](backend/SECURITY_V1.md) for the policy boundaries and PostgreSQL-backed cross-user tests.
+
+Kong and Keycloak are **optional integration experiments**, not prerequisites for financial state correctness. The Gateway Lab has two explicit modes:
+
+- **HTTP Infrastructure Lab (`gateway/compose.http.yml`):** Kong handles routing, correlation IDs, IP-based rate limiting and JWT verification without external authorization calls. FastAPI retains route authorization and SQL ownership enforcement.
+- **External Authorization Lab (`gateway/compose.internal.yml`):** Preserves the Kong external-authorization pilot, including fail-closed handling and a route-specific policy experiment. It is not an organization-wide or reusable cross-service authorization platform.
+
+Both modes proxy to FastAPI without changing financial transactions or domain invariants. Setup, login-route scope, security limitations and manual signing-key rotation are documented in [`gateway/README.md`](gateway/README.md).
+
+Alembic verification covers transactional rollback, canonical-history backfill, readiness rejection of incompatible revisions, and concurrent index creation with downgrade and invalid-build recovery. Test databases reject the protected `finance_db` target, and production migrations require explicit authorization. These safeguards do not establish zero-downtime or rolling-upgrade compatibility.
+
+---
+
+## Test Results and Coverage
+
 The repository includes unit, integration, concurrency, failure-injection, and end-to-end tests. Database-sensitive scenarios use PostgreSQL; optional cache tests include Redis integration. The reported outcomes apply only to the conditions exercised.
-Local Test Results
-The latest reported local backend suite completed with 347 passed, 0 failed, 0 skipped in 136.83 seconds, using PostgreSQL-backed tests and real Redis. This result is not tied to a verified commit-specific CI run. Separately, the Kong authorization integration suite had 8 passed, and gateway full-stack E2E had 2 passed; neither count is included in the backend suite result. After Gateway Lab separation (PR #8), the new local static configuration tests passed 2/2, and a targeted local backend security/authorization/OIDC run passed 71/71. These are separate runs, not additions to the previously reported 347-test backend suite.
-GitHub Actions Evidence
+
+### Local Test Results
+
+The latest reported local backend suite completed with **347 passed, 0 failed,
+0 skipped in 136.83 seconds**, using PostgreSQL-backed tests and real Redis.
+This result is not tied to a verified commit-specific CI run. Separately, the
+Kong authorization integration suite had **8 passed**, and gateway full-stack
+E2E had **2 passed**; neither count is included in the backend suite result.
+
+Following Gateway Lab separation (PR #8), the local static configuration tests passed **2/2**, and a separate backend security/authorization/OIDC run passed **71/71**. These runs are not additions to the previously reported 347-test backend suite.
+
+### GitHub Actions Evidence
+
 These commit-specific results are separate from local test counts:
 - 4292cb2: Kong Authorization Integration Tests passed.
 - 4292cb2: Gateway Full-Stack E2E passed.
@@ -227,16 +264,102 @@ Reconciliation	GET /reconciliations/{id}	Lookup by ID; no listing endpoint
 Engineering	Six static cards	Not a live operations console
 
 
-The Engineering cards are Canonical financial state, Idempotency & concurrency, Append-only history, Reconciliation, API Security & Authorization, and Reliability & Verification.
-The browser keeps JWTs only in memory; logout clears displayed personal data. API errors yield visible error/empty states instead of a fake-data fallback. The UI intentionally does not initiate financial writes in v1.
-Implementation references: backend/static/moneta.html, backend/tests/test_moneta_demo.py.
-Technology Stack
-The backend uses Python, FastAPI, Pydantic, SQLAlchemy, PostgreSQL and Alembic. Redis is an optional listing cache. Kong and Keycloak are optional external integration components for HTTP infrastructure and authorization-boundary experiments. Tests use pytest; the UI is static HTML/CSS/JavaScript served by FastAPI. Financial services primarily use synchronous SQLAlchemy; native-async behavior is evaluated separately.
-Running Locally
-Prerequisites
-Python/pip and PostgreSQL are required. Redis is optional at runtime and needed for cache integration tests. Use separate development and disposable test databases; some tests need database-creation or fault-injection privileges.
-Install Dependencies
-From the backend directory:
+The Kong integration workflow tests fail-closed handling of external-authorization
+timeout, connection failure, malformed responses and HTTP 500. E2E verifies an
+authenticated account read, a denied write with no database mutation, and
+deployment/E2E Kong configuration parity (normalizing the test API address and
+test-realm signing key). These results are evidence for the exercised scenarios,
+not production deployment or exhaustive security correctness.
+
+Gateway Lab separation was merged via [PR #8](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/pull/8) at commit [`e39eb79`](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/commit/e39eb79). The existing Gateway Full-Stack E2E and Kong Authorization Integration workflows passed on the feature branch. A manual Docker smoke test verified Keycloak OIDC login in Moneta, successful authenticated API reads through the **HTTP Infrastructure Lab**, and a `401` response for a request without a JWT. This does not establish a dedicated cross-user HTTP Gateway E2E regression test or production readiness.
+
+The broader suite covers financial transitions, idempotency, PostgreSQL
+concurrency, Redis fault injection, reconciliation, projections, authorization,
+runtime failures, recovery and schema evolution. The individual case studies
+describe the relevant counterexamples, measurements and trade-offs.
+
+---
+
+## Additional Verification
+
+### Runtime Failure Verification
+
+Failure tests exercise post-commit response loss and idempotent retry, pool
+exhaustion, worker termination before/after commit, and PostgreSQL deadlock
+recovery (`40P01`). They verify canonical records, history, receipts and
+provider checkpoints. They do not reproduce PostgreSQL server crashes,
+infrastructure outages or real network/reverse-proxy disconnects.
+
+---
+
+### Async Execution Verification
+
+The application's financial path uses synchronous SQLAlchemy. Separate
+PostgreSQL-backed experiments evaluate `AsyncSession.run_sync()` lifecycle and
+test-only native-async corrections across cancellation, response loss,
+conflicting writes, lock contention and pool recovery. The native-async
+experiment passed **5/5 tests**; it is not the production correction endpoint
+or an application rewrite. ASGI middleware tests cover cancellation,
+request-context cleanup/isolation and process-local metrics, not every real
+client disconnect or cancellation of synchronous database work.
+
+---
+
+### Operational Verification
+
+Exercises cover PostgreSQL backup/restore, projection rebuild and canonical
+audit, deployment preflight, process/readiness checks, SIGTERM shutdown and
+incompatible-revision detection. There has been no production-traffic,
+availability or incident-response validation.
+
+---
+
+## Moneta Demo UI
+
+Moneta is a lightweight **HTML/CSS/JavaScript interface** served at `GET /demo`. It is a presentation layer over existing APIs, **not** the core engineering deliverable.
+
+| **Screen**     | **Data source**                              | **V1 boundary**                                                                 |
+| -------------- | -------------------------------------------- | ------------------------------------------------------------------------------- |
+| Login          | Keycloak OIDC Authorization Code + PKCE      | Legacy `POST /auth/login` and `POST /auth/register` are unavailable through Kong |
+| Dashboard      | `GET /summary`                               | Shows current API summary, not all canonical projections                        |
+| Accounts       | `GET /accounts`, `GET /projections/accounts` | Missing projections are shown explicitly, not fabricated                        |
+| Transactions   | `GET /transactions`                          | Read-only; first 100 **oldest-by-ID** results under the merged Phase A ordering |
+| Reconciliation | `GET /reconciliations/{id}`                  | Lookup by ID; no listing endpoint                                               |
+| Engineering    | Six static cards                             | Not a live operations console                                                   |
+
+The Engineering cards are **Canonical financial state**, **Idempotency &
+concurrency**, **Append-only history**, **Reconciliation**, **API Security &
+Authorization**, and **Reliability & Verification**.
+
+The browser keeps JWTs **only in memory**; logout clears displayed personal data. API errors yield visible error/empty states instead of a fake-data fallback. The UI intentionally does not initiate financial writes in v1.
+
+**Implementation references:** `backend/static/moneta.html`, `backend/tests/test_moneta_demo.py`.
+
+---
+
+## Technology Stack
+
+The backend uses Python, FastAPI, Pydantic, SQLAlchemy, PostgreSQL and Alembic.
+Redis is an optional listing cache. Kong and Keycloak are optional external components
+for HTTP infrastructure and authorization-boundary experiments. Tests use pytest; the UI is static
+HTML/CSS/JavaScript served by FastAPI. Financial services primarily use
+synchronous SQLAlchemy; native-async behavior is evaluated separately.
+
+---
+
+## Running Locally
+
+### Prerequisites
+
+Python/pip and PostgreSQL are required. Redis is optional at runtime and needed
+for cache integration tests. Use separate development and disposable test
+databases; some tests need database-creation or fault-injection privileges.
+
+### Install Dependencies
+
+From the `backend` directory:
+
+```
 pip install -r requirements.txt
 pip install -r requirements-test.txt
 
@@ -267,6 +390,19 @@ Redis fixtures may flush the configured Redis test database; never use a shared 
 Warning: Tests may create, modify, or destroy data. Never point the test runner at a database containing important records.
 Start the API
 uvicorn app.main:app --reload --port 8765
+```
+
+Uvicorn starts the standalone FastAPI application only; it does not start Kong or Keycloak. In this mode, create an account through `POST /auth/register` and authenticate with the local email/password flow (`POST /auth/login`), available through Moneta's login form or the API. Moneta also has a Keycloak OIDC login option for local development, which requires Keycloak to be running separately.
+
+For the optional Kong + Keycloak labs, clients authenticate with Keycloak OIDC and access FastAPI through Kong. Use `gateway/compose.http.yml` for HTTP infrastructure behavior or `gateway/compose.internal.yml` for the External Authorization pilot. Both bind Kong to `127.0.0.1:8004`, so **do not run them concurrently**. The API container is not directly published to a host port in these configurations. Legacy password login and registration routes are unavailable through Kong. See [`gateway/README.md`](gateway/README.md) for prerequisites, setup and security boundaries.
+
+Visit `http://127.0.0.1:8765/demo` for Moneta or `http://127.0.0.1:8765/docs` for Swagger. Moneta shows an empty financial history until actual transactions exist.
+
+Redis is optional for the running application: set `REDIS_URL` only when provider listing caching is needed. Integration tests use the separate `REDIS_TEST_URL` and `REQUIRE_REDIS_TESTS=1` settings shown above.
+
+---
+
+## Scope and Limitations
 
 Uvicorn starts the standalone FastAPI application only; it does not start Kong or Keycloak. In this mode, create an account through POST /auth/register and authenticate with the local email/password flow (POST /auth/login), available through Moneta's login form or the API. Moneta also has a Keycloak OIDC login option for local development, which requires Keycloak to be running separately.
 For the optional Kong + Keycloak labs, clients authenticate with Keycloak OIDC and access FastAPI through Kong. The HTTP Infrastructure Lab uses gateway/compose.http.yml; the separate External Authorization Lab uses gateway/compose.internal.yml. Both configurations publish Kong on 127.0.0.1:8004 and must not run concurrently. Neither exposes the API container directly on a host port. Legacy password login and registration routes are unavailable through Kong. See gateway/README.md for setup, prerequisites, and security boundaries.
