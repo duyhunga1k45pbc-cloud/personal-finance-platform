@@ -18,7 +18,7 @@ The backend implements financial event modeling, transaction and concurrency con
 | Cache consistency | PostgreSQL-revisioned Redis keys, ownership-before-cache checks, fault injection |
 | Query behavior | Deterministic pagination and a measured composite-index change |
 | Reliability | Connection-pool lifecycle, failure injection, recovery and migration checks |
-| Security | FastAPI ownership enforcement, with a focused Keycloak/Kong authorization pilot |
+| Security | FastAPI ownership enforcement; optional Kong/Keycloak integration labs |
 | Verification | PostgreSQL and Redis integration tests; selected async experiments and gateway full-stack E2E |
 | Demo | Moneta read-only interface with six static Engineering cards |
 
@@ -302,7 +302,12 @@ Financial events and signed entries are the source for balances and summaries; p
 
 Authentication identifies the caller; authorization limits operations to owned resources. The route-policy table and immutable `Principal` are implemented in `backend/app/authorization.py` and `backend/app/routers/auth.py`. SQL ownership predicates are applied before joins, counts, pagination and aggregation. Policies cover HTTP routes and are kept consistent with handlers by tests; ownership checks remain distributed through service queries. See [`backend/SECURITY_V1.md`](backend/SECURITY_V1.md) for the policy boundaries and PostgreSQL-backed cross-user tests.
 
-The focused Kong/Keycloak pilot adds OIDC authentication, Kong JWT verification and external authorization for `/accounts`; FastAPI retains ownership enforcement. It is not an organization-wide authorization platform. Deployment, login-route scope and manual signing-key rotation are documented in [`gateway/README.md`](gateway/README.md).
+Kong and Keycloak are **optional integration experiments**, not prerequisites for financial state correctness. The Gateway Lab has two explicit modes:
+
+- **HTTP Infrastructure Lab (`gateway/compose.http.yml`):** Kong handles routing, correlation IDs, IP-based rate limiting and JWT verification without external authorization calls. FastAPI retains route authorization and SQL ownership enforcement.
+- **External Authorization Lab (`gateway/compose.internal.yml`):** Preserves the Kong external-authorization pilot, including fail-closed handling and a route-specific policy experiment. It is not an organization-wide or reusable cross-service authorization platform.
+
+Both modes proxy to FastAPI without changing financial transactions or domain invariants. Setup, login-route scope, security limitations and manual signing-key rotation are documented in [`gateway/README.md`](gateway/README.md).
 
 Alembic verification covers transactional rollback, canonical-history backfill, readiness rejection of incompatible revisions, and concurrent index creation with downgrade and invalid-build recovery. Test databases reject the protected `finance_db` target, and production migrations require explicit authorization. These safeguards do not establish zero-downtime or rolling-upgrade compatibility.
 
@@ -320,6 +325,8 @@ This result is not tied to a verified commit-specific CI run. Separately, the
 Kong authorization integration suite had **8 passed**, and gateway full-stack
 E2E had **2 passed**; neither count is included in the backend suite result.
 
+Following Gateway Lab separation (PR #8), the local static configuration tests passed **2/2**, and a separate backend security/authorization/OIDC run passed **71/71**. These runs are not additions to the previously reported 347-test backend suite.
+
 ### GitHub Actions Evidence
 
 These commit-specific results are separate from local test counts:
@@ -336,6 +343,8 @@ authenticated account read, a denied write with no database mutation, and
 deployment/E2E Kong configuration parity (normalizing the test API address and
 test-realm signing key). These results are evidence for the exercised scenarios,
 not production deployment or exhaustive security correctness.
+
+Gateway Lab separation was merged via [PR #8](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/pull/8) at commit [`e39eb79`](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/commit/e39eb79). The existing Gateway Full-Stack E2E and Kong Authorization Integration workflows passed on the feature branch. A manual Docker smoke test verified Keycloak OIDC login in Moneta, successful authenticated API reads through the **HTTP Infrastructure Lab**, and a `401` response for a request without a JWT. This does not establish a dedicated cross-user HTTP Gateway E2E regression test or production readiness.
 
 The broader suite covers financial transitions, idempotency, PostgreSQL
 concurrency, Redis fault injection, reconciliation, projections, authorization,
@@ -404,8 +413,8 @@ The browser keeps JWTs **only in memory**; logout clears displayed personal data
 ## Technology Stack
 
 The backend uses Python, FastAPI, Pydantic, SQLAlchemy, PostgreSQL and Alembic.
-Redis is an optional listing cache. Kong and Keycloak are external components
-for the focused authorization pilot. Tests use pytest; the UI is static
+Redis is an optional listing cache. Kong and Keycloak are optional external components
+for HTTP infrastructure and authorization-boundary experiments. Tests use pytest; the UI is static
 HTML/CSS/JavaScript served by FastAPI. Financial services primarily use
 synchronous SQLAlchemy; native-async behavior is evaluated separately.
 
@@ -484,7 +493,7 @@ uvicorn app.main:app --reload --port 8765
 
 Uvicorn starts the standalone FastAPI application only; it does not start Kong or Keycloak. In this mode, create an account through `POST /auth/register` and authenticate with the local email/password flow (`POST /auth/login`), available through Moneta's login form or the API. Moneta also has a Keycloak OIDC login option for local development, which requires Keycloak to be running separately.
 
-For the integrated Kong + Keycloak deployment, clients authenticate with Keycloak OIDC and access FastAPI through Kong. The legacy password login and registration routes are unavailable through Kong. Follow [`gateway/README.md`](gateway/README.md) for that deployment's setup and scope.
+For the optional Kong + Keycloak labs, clients authenticate with Keycloak OIDC and access FastAPI through Kong. Use `gateway/compose.http.yml` for HTTP infrastructure behavior or `gateway/compose.internal.yml` for the External Authorization pilot. Both bind Kong to `127.0.0.1:8004`, so **do not run them concurrently**. The API container is not directly published to a host port in these configurations. Legacy password login and registration routes are unavailable through Kong. See [`gateway/README.md`](gateway/README.md) for prerequisites, setup and security boundaries.
 
 Visit `http://127.0.0.1:8765/demo` for Moneta or `http://127.0.0.1:8765/docs` for Swagger. Moneta shows an empty financial history until actual transactions exist.
 
