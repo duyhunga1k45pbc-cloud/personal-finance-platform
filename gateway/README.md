@@ -62,3 +62,58 @@ API service address and the test realm's dynamic JWT key ID/public key. The
 E2E regression test normalizes those environment-specific values and asserts
 that the rest of the generated Kong configuration matches the gateway
 deployment, including route/plugin scope and JWT verification settings.
+
+## Optional gateway lab modes
+
+Two gateway configurations are available. They intentionally share the same
+FastAPI financial backend; neither configuration is required for the standalone
+backend workflow.
+
+| Mode | Compose file | Purpose |
+| --- | --- | --- |
+| External AuthZ (existing default) | `gateway/compose.internal.yml` | Kong JWT + route-specific `pfp-authz` (fail closed), plus HTTP gateway plugins |
+| HTTP infrastructure lab | `gateway/compose.http.yml` | Kong routing, request IDs, IP rate limiting and JWT verification; **no** `pfp-authz` call |
+
+The HTTP lab *retains Kong JWT verification* so a token-free request is not
+silently allowed through a protected route. FastAPI independently authenticates
+and authorizes requests in **both** modes, including resource ownership checks.
+The absence of `pfp-authz` in HTTP mode changes the **gateway-level** policy:
+for example, HTTP mode does not apply the pilot's special `POST /accounts`
+DENY rule. FastAPI then makes its own decision. Do not describe the two modes
+as having identical access policies.
+
+From the repository root, with the existing `backend_default` Docker network,
+API container environment file, and the appropriate Keycloak setup available:
+
+```sh
+# Existing External AuthZ mode; requires PFP_GATEWAY_AUTHZ_SECRET.
+docker compose -f gateway/compose.internal.yml up -d --build
+
+# Stop it before changing modes (both use 127.0.0.1:8004).
+docker compose -f gateway/compose.internal.yml down
+
+# HTTP lab: no custom pfp-authz image or shared secret is needed.
+docker compose -f gateway/compose.http.yml up -d --build
+
+# Stop HTTP lab before returning to External AuthZ mode.
+docker compose -f gateway/compose.http.yml down
+```
+
+Both lab files expose only Kong to the loopback host. Their API container is
+reachable via the Docker network, not via an additional host port. The separate
+standalone backend Docker Compose remains unchanged, and its independently
+published host port bypasses Kong policies.
+
+The HTTP lab is *not* an anonymous API: the bundled JWT plugin remains enabled
+on the `pfp-api` service, with the same static key rotation limitations
+described above. To study gateway behavior with a different JWT setup, use a
+separate explicit experiment rather than silently relaxing this mode.
+
+### Verify the boundary before making changes
+
+Run `python -m pytest -q gateway/tests/test_lab_mode_configs.py` to check that
+both Kong declarative configurations maintain the same routes/JWT/rate-limit
+settings, while only the External AuthZ mode attaches `pfp-authz`.
+These static checks do **not** replace the existing real-stack security E2E
+suite. Continue running that suite against the External AuthZ mode before
+accepting security-sensitive changes.
