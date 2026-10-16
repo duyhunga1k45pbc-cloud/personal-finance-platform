@@ -8,7 +8,7 @@ The backend implements financial event modeling, concurrency control, transactio
 
 **Project status:** Engineering portfolio and experimental application. Not production-deployed.
 
-**Quick navigation:** [Over-refund](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-preventing-concurrent-over-refunds) · [Redis revision cache](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-transaction-consistent-redis-caching) · [Connection pool RCA](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-connection-pool-starvation) · [Index & pagination](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-deterministic-pagination-and-postgresql-indexing) · [Architecture](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#system-structure) · [Security](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#security-boundaries) · [Verification](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#test-results-and-coverage)
+**Quick navigation:** [Over-refund](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-preventing-concurrent-over-refunds) · [Redis revision cache](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-transaction-consistent-redis-caching) · [Connection pool RCA](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-connection-pool-starvation) · [Index & pagination](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-deterministic-pagination-and-postgresql-indexing) · [Async lifecycle](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-async-sqlalchemy-event-loop-lifecycle-isolation) · [Architecture](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#system-structure) · [Security](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#security-boundaries) · [Verification](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#test-results-and-coverage)
 
 ---
 
@@ -27,7 +27,7 @@ The backend implements financial event modeling, concurrency control, transactio
 
 **Historical local backend suite:** **347 passed, 0 failed, 0 skipped in 136.83 seconds**, using PostgreSQL-backed tests and real Redis integration.
 
-A later GitHub pull request shows successful Backend CI and Gateway Full-Stack E2E checks after the SSE lifecycle test fixes. See the commit-specific evidence below; the screenshot does not expose the exact backend test count for that run.
+The latest pull-request backend suite is reported as **358/358 passed (0 failed)** after the SSE lifecycle fixes. The supplied PR screenshot independently confirms that Backend CI and both Gateway Full-Stack E2E checks passed, but does not display the numerical pytest summary.
 
 The reported results apply to tested scenarios; they do not establish exhaustive correctness or production readiness.
 
@@ -259,11 +259,11 @@ Financial transactions require a durable record of activity before connected cli
 
 The shared-stream implementation uses process-local polling and subscriber fan-out to avoid a separate database polling loop for every connected client. Database-backed cursors support replay after reconnect. Verified scenarios include concurrent event ordering, subscription handoff, user isolation, bounded subscriber queues, and poller shutdown.
 
-### Integration Failure and Resolution
+### Verification and Limitations
 
-A Python 3.12 full-suite run exposed an async database connection/event-loop lifecycle failure that focused SSE tests had not reproduced. Subsequent lifecycle isolation tests addressed cross-loop resource reuse. Entering application lifespan correctly also exposed process-local `DRAINING` state leaking between tests; test fixtures now restore that state at test boundaries.
+PostgreSQL-backed tests exercise cursor replay, subscriber isolation, subscription handoff, bounded queues, poller failure, and shutdown. The shared poller reduces redundant database polling within a process; it is not a cross-instance event bus.
 
-The changes preserve production connection pooling, startup fail-closed behavior, and financial transaction semantics. The later pull-request checks show Backend CI and Gateway Full-Stack E2E passing. These results validate the tested integration paths, not production SSE availability or multi-instance delivery guarantees.
+The separate async lifecycle case study below documents the integration failure discovered during full-suite verification. Passing CI checks do not establish production SSE availability or multi-instance delivery guarantees.
 
 **Implementation references:**
 
@@ -272,6 +272,45 @@ The changes preserve production connection pooling, startup fail-closed behavior
 - `backend/tests/test_activity_stream.py`
 - `backend/tests/test_activity_shared_stream.py`
 - `backend/tests/test_activity_stream_lifecycle.py`
+
+---
+
+## Case Study: Async SQLAlchemy Event-Loop Lifecycle Isolation
+
+### The Symptom
+
+A Python 3.12 full backend CI run failed on the SSE future-cursor validation test with `Future attached to a different loop`. The focused SSE tests had passed, making the failure dependent on broader test execution context.
+
+### Root Cause and Ownership Boundary
+
+The SSE reader uses a module-level SQLAlchemy `AsyncEngine` with pooled asyncpg connections. A direct reader test called the shared engine inside `asyncio.run()`, while SSE HTTP tests used a module-level `TestClient` without entering application lifespan. These patterns could leave pooled connections associated with an earlier event loop and subsequently reuse them from another loop.
+
+The observed exception was consistent with cross-loop connection reuse. The audit identified this unsafe ownership path, although the exact connection checkout sequence in the failing CI run was not traced.
+
+Closing an `AsyncSession` returns a connection to its pool; it does not necessarily dispose that connection. Resource lifetime must therefore be managed at the engine and event-loop boundaries.
+
+### The Fix
+
+- SSE HTTP tests now use lifespan-managed `TestClient` fixtures, with requests sharing a client event loop and existing shutdown cleanup disposing the async engine.
+- The account-sharing test uses a test-owned pooled async engine and disposes it before its `asyncio.run()` event loop closes.
+- Regression assertions check event-loop identity within a TestClient lifespan and distinct loops with pool cleanup across successive lifespans.
+- A further full-suite failure exposed process-local deployment state remaining `DRAINING` after SSE test shutdown. An autouse fixture restores test state before and after each SSE test.
+
+The changes are confined to test isolation. Production connection pooling, fail-closed startup checks, SSE replay behavior, and financial write semantics remain unchanged. The fix does not use permanent `NullPool` or bypass startup readiness.
+
+### Verification Evidence
+
+The original Python 3.12 CI run reported **355 passed, 1 failed** on the cross-event-loop exception. After the first isolation patch, a later run reported **357 passed, 1 failed**: SSE tests passed, but an unrelated commit-response-loss test could not start because deployment state had leaked from SSE shutdown. The final state-isolation patch passed **7/7 targeted tests** locally. The latest pull-request backend run is reported as **358/358 passed (0 failed)**; the supplied screenshot confirms Backend CI and Gateway Full-Stack E2E workflows passed, but does not independently show the exact pytest count.
+
+These results support the test-lifecycle correction in the evaluated configurations. They are not evidence that every async resource-lifecycle failure or production incident mode has been eliminated.
+
+**Implementation references:**
+
+- `backend/app/activity_feed_reader.py`
+- `backend/app/main.py`
+- `backend/tests/test_activity_stream.py`
+- `backend/tests/test_activity_stream_lifecycle.py`
+- `backend/tests/test_account_sharing.py`
 
 ---
 
@@ -518,7 +557,9 @@ Database-sensitive scenarios use PostgreSQL. Optional cache tests include real R
 
 These are **separate test runs**. Their counts must not be summed into a single suite result.
 
-The historical full backend result was obtained locally in 136.83 seconds using PostgreSQL-backed tests and real Redis. Newer CI checks reflect a later code revision and must not be conflated with this local count.
+The historical full backend result was obtained locally in 136.83 seconds using PostgreSQL-backed tests and real Redis. The newer **358/358** figure refers to the reported pull-request CI run, not this historical local run.
+
+**Latest pull-request Backend CI (reported): 358 passed / 358 collected, 0 failed.** The supplied GitHub screenshot verifies a successful workflow, though it does not show the numeric pytest summary.
 
 ### Gateway Verification
 
@@ -551,7 +592,7 @@ The following commit-specific CI results are separate from local test counts.
 | `f767456`  | Gateway Full-Stack E2E (pull request) | Passed     |
 | `f767456`  | Gateway Full-Stack E2E (push)         | Passed     |
 
-The dedicated Kong integration workflow did not run for commit `27bb173`. The three successful `f767456` checks are shown in the supplied PR screenshot; that screenshot does not give an exact backend pytest pass count or establish that the PR was merged.
+The dedicated Kong integration workflow did not run for commit `27bb173`. The three successful `f767456` checks are shown in the supplied PR screenshot; that screenshot does not independently display the reported 358/358 pytest count or establish that the PR was merged.
 
 The authorization integration tests cover timeout, connection failure, malformed response, and HTTP 500 behavior under the External Authorization Lab.
 
