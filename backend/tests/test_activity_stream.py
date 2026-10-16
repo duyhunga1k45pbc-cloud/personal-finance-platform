@@ -11,11 +11,19 @@ from app.routers import activity_stream
 from app.routers.activity_stream import parse_cursor
 
 
+@pytest.fixture(autouse=True)
+def reset_deployment_state():
+    deployment_state.reset_for_tests()
+    try:
+        yield
+    finally:
+        deployment_state.reset_for_tests()
+
+
 @pytest.fixture
 def client():
     lifespan_pool = None
     try:
-        deployment_state.reset_for_tests()
         with TestClient(app) as test_client:
             lifespan_pool = async_engine.sync_engine.pool
             yield test_client
