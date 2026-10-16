@@ -1,4 +1,7 @@
+import os
 import logging
+import asyncio
+import contextlib
 import time
 from pathlib import Path
 
@@ -10,6 +13,7 @@ from sqlalchemy.orm import Session
 from app import models
 from app.canonical_service import canonical_summary
 from app.database import SessionLocal
+from app.activity_feed_reader import async_engine
 from app.deployment import assert_startup_ready, mark_process_draining, mark_process_serving
 from app.observability import (
     bind_request_id,
@@ -20,6 +24,8 @@ from app.observability import (
     sanitize_request_id,
 )
 from app.routers import accounts, auth, causal_events, observability, projections, providers, reconciliations, transactions, transfers
+from app.routers import activity_stream
+from app.routers import activity_shared_stream
 from app.authorization import assert_only_policed_routes, enforce_declared_policy
 from app.routers.auth import Principal, authorize_owner_principal, get_principal
 from app.security import settings
@@ -35,6 +41,40 @@ app = FastAPI(
 )
 
 
+
+_activity_drain_task = None
+
+
+@app.on_event("startup")
+async def start_activity_drain_watcher():
+    global _activity_drain_task
+
+    marker = os.getenv("PFP_SSE_DRAIN_MARKER", "").strip()
+    if marker and Path(marker).exists():
+        raise RuntimeError(
+            "SSE drain marker already exists at startup"
+        )
+
+    await activity_shared_stream.reset_shared_sse_for_startup()
+
+    _activity_drain_task = asyncio.create_task(
+        activity_shared_stream.watch_drain_marker()
+    )
+
+
+@app.on_event("shutdown")
+async def stop_activity_drain_watcher():
+    global _activity_drain_task
+
+    if _activity_drain_task is not None:
+        _activity_drain_task.cancel()
+
+        with contextlib.suppress(asyncio.CancelledError):
+            await _activity_drain_task
+
+        _activity_drain_task = None
+
+
 @app.on_event("startup")
 def deployment_startup_gate():
     assert_only_policed_routes(app)
@@ -45,6 +85,12 @@ def deployment_startup_gate():
 @app.on_event("shutdown")
 def deployment_shutdown_gate():
     mark_process_draining()
+    # Async engine disposal is handled by the ASGI lifecycle.
+
+@app.on_event("shutdown")
+async def close_activity_feed_engine():
+    await activity_shared_stream.shutdown_shared_pollers()
+    await async_engine.dispose()
 
 
 @app.middleware("http")
@@ -116,6 +162,8 @@ from app.routers.gateway_authz import router as gateway_authz_router
 app.include_router(auth.router)
 app.include_router(accounts.router)
 app.include_router(transactions.router)
+app.include_router(activity_stream.router)
+app.include_router(activity_shared_stream.router)
 app.include_router(transfers.router)
 app.include_router(causal_events.router)
 app.include_router(reconciliations.router)
