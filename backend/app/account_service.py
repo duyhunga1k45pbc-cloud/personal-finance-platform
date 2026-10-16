@@ -1,7 +1,8 @@
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.authorization import Subject, owned
-from app.models import FinancialAccount
+from app.models import AccountGrant, FinancialAccount
 
 DEFAULT_CASH_ACCOUNT_NAME = "Default Cash"
 DEFAULT_CURRENCY = "VND"
@@ -38,5 +39,32 @@ def get_owned_account(
     return (
         owned(db.query(FinancialAccount), FinancialAccount.user_id, Subject(user_id))
         .filter(FinancialAccount.id == account_id)
+        .first()
+    )
+
+
+def get_readable_account(
+    db: Session,
+    user_id: int,
+    account_id: int,
+) -> FinancialAccount | None:
+    shared_with_user = (
+        db.query(AccountGrant.account_id)
+        .filter(
+            AccountGrant.account_id == FinancialAccount.id,
+            AccountGrant.grantee_user_id == user_id,
+            AccountGrant.role == "VIEWER",
+        )
+        .exists()
+    )
+    return (
+        db.query(FinancialAccount)
+        .filter(
+            FinancialAccount.id == account_id,
+            or_(
+                FinancialAccount.user_id == user_id,
+                shared_with_user,
+            ),
+        )
         .first()
     )

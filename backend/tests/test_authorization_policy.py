@@ -63,6 +63,13 @@ EXPECTED_OWNER_ROUTE_CONTRACT = {
     ("POST", "/internal/gateway/authorize"): (ResourceType.USER, Action.EXECUTE),
     ("GET", "/accounts"): (ResourceType.ACCOUNT, Action.LIST),
     ("POST", "/accounts"): (ResourceType.ACCOUNT, Action.CREATE),
+    ("GET", "/accounts/shared-with-me"): (ResourceType.ACCOUNT, Action.LIST),
+    ("POST", "/accounts/{account_id}/shares"): (ResourceType.ACCOUNT, Action.CREATE),
+    ("GET", "/accounts/{account_id}/shares"): (ResourceType.ACCOUNT, Action.LIST),
+    ("DELETE", "/accounts/{account_id}/shares/{user_id}"): (
+        ResourceType.ACCOUNT,
+        Action.DELETE,
+    ),
     ("GET", "/accounts/{account_id}"): (ResourceType.ACCOUNT, Action.READ),
     ("GET", "/transactions"): (ResourceType.TRANSACTION, Action.LIST),
     ("GET", "/transactions/{transaction_id}"): (ResourceType.TRANSACTION, Action.READ),
@@ -254,7 +261,7 @@ def test_independent_route_contract_matches_policies_and_route_inventory():
         for route in _all_routes()
         for key in _route_keys(route)
     }
-    assert len(EXPECTED_OWNER_ROUTE_CONTRACT) == 38
+    assert len(EXPECTED_OWNER_ROUTE_CONTRACT) == 42
     _assert_route_contract(ROUTE_POLICIES, route_keys)
 
 

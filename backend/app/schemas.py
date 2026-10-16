@@ -31,6 +31,21 @@ class FinancialAccountRead(BaseModel):
     version: int
 
 
+class AccountGrantCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    grantee_user_id: int = Field(gt=0)
+
+
+class AccountGrantRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    account_id: int
+    grantee_user_id: int
+    role: Literal["VIEWER"]
+    created_at: datetime
+
+
 class UserCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -140,4 +155,3 @@ class ProviderInterpretationConfirm(BaseModel):
     event_type: Literal["INCOME", "EXPENSE", "TRANSFER", "REFUND", "REVERSAL"]
     account_id: int
     reason: str | None = Field(default=None, max_length=255)
-

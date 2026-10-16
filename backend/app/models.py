@@ -124,6 +124,45 @@ class FinancialAccount(Base):
     )
 
 
+class AccountGrant(Base):
+    __tablename__ = "account_grants"
+    __table_args__ = (
+        CheckConstraint(
+            "role = 'VIEWER'",
+            name="ck_account_grants_role_viewer",
+        ),
+        UniqueConstraint(
+            "account_id",
+            "grantee_user_id",
+            name="uq_account_grants_account_grantee",
+        ),
+        Index(
+            "ix_account_grants_grantee_account",
+            "grantee_user_id",
+            "account_id",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True)
+    account_id = Column(
+        Integer,
+        ForeignKey("financial_accounts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    grantee_user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    role = Column(String(16), nullable=False, default="VIEWER", server_default="VIEWER")
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.datetime.now(datetime.timezone.utc),
+        server_default=text("CURRENT_TIMESTAMP"),
+    )
+
+
 class FinancialEvent(Base):
     __tablename__ = "financial_events"
     __table_args__ = (
