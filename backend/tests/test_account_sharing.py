@@ -5,8 +5,9 @@ import uuid
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.activity_feed_reader import read_activity_events
+import app.activity_feed_reader as activity_feed_reader
 from app.authorization import Access, Action, ROUTE_POLICIES, ResourceType, RoutePolicy
 from app.database import Base, SessionLocal, engine
 from app.main import app
@@ -175,7 +176,7 @@ def test_non_owner_cannot_create_share_for_another_users_account():
     assert attacker_id != owner_id
 
 
-def test_viewer_cannot_read_or_write_owners_financial_data():
+def test_viewer_cannot_read_or_write_owners_financial_data(monkeypatch):
     owner_id, owner = _user("owner")
     viewer_id, viewer = _user("viewer")
     account = _account(owner)
@@ -237,12 +238,32 @@ def test_viewer_cannot_read_or_write_owners_financial_data():
     with SessionLocal() as db:
         assert db.query(Transaction).filter(Transaction.account_id == account["id"]).count() == 1
 
-    async def read_both_feeds():
-        owner_rows = await read_activity_events(user_id=owner_id, after_sequence=0)
-        viewer_rows = await read_activity_events(user_id=viewer_id, after_sequence=0)
-        return owner_rows, viewer_rows
+    test_engine = create_async_engine(activity_feed_reader._async_database_url())
+    original_session_factory = activity_feed_reader.AsyncFeedSession
+    with monkeypatch.context() as session_patch:
+        session_patch.setattr(
+            activity_feed_reader,
+            "AsyncFeedSession",
+            async_sessionmaker(bind=test_engine, expire_on_commit=False),
+        )
 
-    owner_events, viewer_events = asyncio.run(read_both_feeds())
+        async def read_both_feeds():
+            try:
+                owner_rows = await activity_feed_reader.read_activity_events(
+                    user_id=owner_id,
+                    after_sequence=0,
+                )
+                viewer_rows = await activity_feed_reader.read_activity_events(
+                    user_id=viewer_id,
+                    after_sequence=0,
+                )
+                return owner_rows, viewer_rows
+            finally:
+                await test_engine.dispose()
+
+        owner_events, viewer_events = asyncio.run(read_both_feeds())
+
+    assert activity_feed_reader.AsyncFeedSession is original_session_factory
     assert [event["resource_id"] for event in owner_events] == [transaction_id]
     assert viewer_events == []
 
