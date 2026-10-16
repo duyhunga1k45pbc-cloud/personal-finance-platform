@@ -13,6 +13,7 @@ from app.canonical_service import (
     void_canonical_with_expected_version,
 )
 from app.credit_card_service import validate_transaction_account_semantics
+from app.activity_feed_service import append_activity_event
 from app.command_service import (
     IdempotencyConflictError,
     add_command_receipt,
@@ -308,6 +309,14 @@ def create_transaction(
         reason="legacy_api_create",
     )
     response_body = _transaction_response(new_item, event)
+
+    append_activity_event(
+        db,
+        user_id=current_user.id,
+        event_type="financial.transaction.created",
+        resource_type="transaction",
+        resource_id=new_item.id,
+    )
     add_command_receipt(
         db,
         user_id=current_user.id,

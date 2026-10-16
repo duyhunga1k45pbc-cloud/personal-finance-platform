@@ -1044,3 +1044,52 @@ class FinancialAccountBalanceProjection(Base):
         nullable=False,
         default=lambda: datetime.datetime.now(datetime.timezone.utc),
     )
+
+
+class ActivityFeedCursor(Base):
+    __tablename__ = "activity_feed_cursors"
+
+    user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    last_sequence = Column(
+        BigInteger,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "last_sequence >= 0",
+            name="ck_activity_feed_cursor_nonnegative",
+        ),
+    )
+
+
+class ActivityFeedEvent(Base):
+    __tablename__ = "activity_feed_events"
+
+    user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    sequence = Column(BigInteger, primary_key=True)
+    event_type = Column(String(100), nullable=False)
+    resource_type = Column(String(100), nullable=False)
+    resource_id = Column(Integer, nullable=False)
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=text("CURRENT_TIMESTAMP"),
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "sequence > 0",
+            name="ck_activity_feed_sequence_positive",
+        ),
+    )

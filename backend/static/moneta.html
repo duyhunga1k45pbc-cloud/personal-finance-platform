@@ -193,6 +193,9 @@
       });
       if (!response.ok) throw new Error('Không thể đổi authorization code (HTTP ' + response.status + ').');
       const tokens = await response.json();
+
+
+
       if (typeof tokens.access_token !== 'string' || !tokens.access_token) {
         throw new Error('Keycloak không trả về access token.');
       }
@@ -215,6 +218,7 @@
       $('who').textContent = me.email || 'Keycloak user';
       $('login-modal').classList.remove('open');
       await loadAll();
+      if (token) startActivityStream();
     }
 
     const labels = {income:'Thu nhập',expense:'Chi tiêu'};
@@ -370,9 +374,18 @@
       $('kpi-grid').innerHTML = state('empty','Đang tải...');
       $('accounts-grid').innerHTML = state('empty','Đang tải...');
       $('recent-body').innerHTML = $('transactions-body').innerHTML = '<tr><td colspan="6" class="empty">Đang tải...</td></tr>';
-      const [acc, tx, sum, proj] = await Promise.allSettled([
-        api('/accounts'), api('/transactions?limit=100'), api('/summary'), api('/projections/accounts')
+      const [acc, tx, sum, projStatus] = await Promise.allSettled([
+        api('/accounts'), api('/transactions?limit=100'), api('/summary'), api('/projections/status')
       ]);
+
+      let proj = {status: 'rejected'};
+
+      if (projStatus.status === 'fulfilled' &&
+          projStatus.value.status === 'FRESH') {
+        proj = await Promise.allSettled([
+          api('/projections/accounts')
+        ]).then(results => results[0]);
+      }
       if (!token) return;
       if (acc.status==='fulfilled') { accounts = acc.value; renderAccounts(); renderLegend(); }
       else { accounts = []; $('accounts-grid').innerHTML = setError('accounts', acc.reason); $('acct-legend').innerHTML = setError('accounts', acc.reason); }
@@ -382,6 +395,198 @@
       else { transactions = []; const m = `<tr><td colspan="6" class="empty">Lỗi: ${escapeHtml(tx.reason.message)}</td></tr>`; $('recent-body').innerHTML = $('transactions-body').innerHTML = m; $('tx-count').textContent=''; }
       if (sum.status==='fulfilled') { summary = sum.value; renderKpis(); }
       else { $('kpi-grid').innerHTML = setError('summary', sum.reason); }
+      return [acc, tx, sum].every(r => r.status === 'fulfilled');
+
+    }
+
+
+    // Durable activity notifications. JWT and cursor stay in memory.
+    let activityGeneration = 0;
+    let activityController = null;
+    let activityReconnectTimer = null;
+    let activityExpiryTimer = null;
+    let activityReloadTimer = null;
+    let activityReloadPending = false;
+    let activityReloadRunning = false;
+    let activityCursor = '0';
+    let activityRetryMs = 1000;
+
+    function stopActivityStream() {
+      activityGeneration++;
+      if (activityController) activityController.abort();
+      activityController = null;
+      clearTimeout(activityReconnectTimer);
+      clearTimeout(activityExpiryTimer);
+      clearTimeout(activityReloadTimer);
+      activityReconnectTimer = null;
+      activityExpiryTimer = null;
+      activityReloadTimer = null;
+      activityCursor = '0';
+      activityReloadPending = false;
+      activityRetryMs = 1000;
+    }
+
+    function scheduleActivityReload(generation) {
+      if (generation !== activityGeneration || !token) return;
+      activityReloadPending = true;
+      if (activityReloadRunning || activityReloadTimer) return;
+
+      activityReloadTimer = setTimeout(
+        () => runActivityReload(generation), 250
+      );
+    }
+
+    async function runActivityReload(generation) {
+      activityReloadTimer = null;
+      if (generation !== activityGeneration || !token ||
+          activityReloadRunning || !activityReloadPending) return;
+
+      activityReloadPending = false;
+      activityReloadRunning = true;
+      let success = false;
+
+      try {
+        success = await loadAll() === true;
+      } catch (error) {
+        console.warn('Activity reload failed', error);
+      } finally {
+        activityReloadRunning = false;
+      }
+
+      if (generation !== activityGeneration || !token) return;
+
+      if (!success) {
+        activityReloadPending = true;
+        activityReloadTimer = setTimeout(
+          () => runActivityReload(generation), 3000
+        );
+      } else if (activityReloadPending) {
+        scheduleActivityReload(generation);
+      }
+    }
+
+    function startActivityStream() {
+      stopActivityStream();
+      if (!token) return;
+
+      const generation = activityGeneration;
+      connectActivityStream(generation);
+    }
+
+    async function connectActivityStream(generation) {
+      if (generation !== activityGeneration || !token) return;
+
+      const controller = new AbortController();
+      activityController = controller;
+
+      try {
+        if (authSource === 'keycloak') {
+          await ensureFreshOidcAccessToken();
+        }
+
+        if (generation !== activityGeneration || !token) return;
+
+        // Reconnect before the Keycloak JWT expires.
+        if (authSource === 'keycloak') {
+          const remaining = oidcAccessExpiresAt - Date.now() - 30000;
+          activityExpiryTimer = setTimeout(
+            () => controller.abort(),
+            Math.max(1000, remaining)
+          );
+        }
+
+        const response = await fetch('/activity/shared-stream', {
+          method: 'GET',
+          headers: {
+            'Authorization': 'Bearer ' + token,
+            'Accept': 'text/event-stream',
+            'Last-Event-ID': activityCursor
+          },
+          signal: controller.signal,
+          cache: 'no-store'
+        });
+
+        if (generation !== activityGeneration) return;
+
+        if (response.status === 401 || response.status === 403) {
+          logout('Phiên đăng nhập không còn hợp lệ.');
+          return;
+        }
+
+        if (!response.ok || !response.body) {
+          throw new Error('SSE HTTP ' + response.status);
+        }
+
+        activityRetryMs = 1000;
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let eventId = '';
+        let eventName = '';
+        let eventData = [];
+
+        function finishFrame() {
+          if (eventData.length && /^\d{1,19}$/.test(eventId)) {
+            activityCursor = eventId;
+            scheduleActivityReload(generation);
+          }
+          eventId = '';
+          eventName = '';
+          eventData = [];
+        }
+
+        function consumeLine(line) {
+          if (line.endsWith('\r')) line = line.slice(0, -1);
+          if (line === '') {
+            finishFrame();
+          } else if (line.startsWith('id:')) {
+            eventId = line.slice(3).trimStart();
+          } else if (line.startsWith('event:')) {
+            eventName = line.slice(6).trimStart();
+          } else if (line.startsWith('data:')) {
+            eventData.push(line.slice(5).trimStart());
+          }
+          // SSE comments such as ": heartbeat" do not move cursor.
+        }
+
+        while (generation === activityGeneration && !controller.signal.aborted) {
+          const {value, done} = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, {stream: true});
+
+          if (buffer.length > 1024 * 1024) {
+            throw new Error('SSE frame exceeds buffer limit');
+          }
+
+          let position;
+          while ((position = buffer.indexOf('\n')) !== -1) {
+            consumeLine(buffer.slice(0, position));
+            buffer = buffer.slice(position + 1);
+          }
+        }
+      } catch (error) {
+        if (generation === activityGeneration && !controller.signal.aborted) {
+          console.warn('Activity stream disconnected', error);
+        }
+      } finally {
+        clearTimeout(activityExpiryTimer);
+        activityExpiryTimer = null;
+
+        if (activityController === controller) {
+          activityController = null;
+        }
+        controller.abort();
+      }
+
+      if (generation !== activityGeneration || !token) return;
+
+      const delay = activityRetryMs;
+      activityRetryMs = Math.min(activityRetryMs * 2, 15000);
+      activityReconnectTimer = setTimeout(
+        () => connectActivityStream(generation), delay
+      );
     }
 
     function signOutWithKeycloak() {
@@ -402,6 +607,7 @@
     }
 
     function logout(message){
+      stopActivityStream();
       oidcSessionGeneration += 1; // invalidate any in-flight refresh response
       token = null; authSource = null; oidcIdToken = null;
       oidcRefreshToken = null;
@@ -426,6 +632,7 @@
         $('who').textContent = $('login-email').value.trim();
         $('login-modal').classList.remove('open');
         await loadAll();
+        if (token) startActivityStream();
       } catch (err) {
         $('login-error').textContent = err.status === 401 ? 'Email hoặc mật khẩu không đúng.' : err.message;
       } finally { btn.disabled = false; }

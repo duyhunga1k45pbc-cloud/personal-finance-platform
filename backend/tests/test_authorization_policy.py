@@ -22,6 +22,8 @@ from app.main import app
 from app.routers import (
     accounts,
     auth,
+    activity_stream,
+    activity_shared_stream,
     causal_events,
     gateway_authz,
     observability,
@@ -39,6 +41,8 @@ client = TestClient(app)
 ROUTERS = [
     auth.router,
     accounts.router,
+    activity_stream.router,
+    activity_shared_stream.router,
     transactions.router,
     transfers.router,
     causal_events.router,
@@ -53,6 +57,8 @@ ROUTERS = [
 # constructing it from ROUTE_POLICIES so policy drift is detectable.
 EXPECTED_OWNER_ROUTE_CONTRACT = {
     ("GET", "/summary"): (ResourceType.SUMMARY, Action.READ),
+    ("GET", "/activity/stream"): (ResourceType.USER, Action.READ),
+    ("GET", "/activity/shared-stream"): (ResourceType.USER, Action.READ),
     ("GET", "/auth/me"): (ResourceType.USER, Action.READ),
     ("POST", "/internal/gateway/authorize"): (ResourceType.USER, Action.EXECUTE),
     ("GET", "/accounts"): (ResourceType.ACCOUNT, Action.LIST),
@@ -248,7 +254,7 @@ def test_independent_route_contract_matches_policies_and_route_inventory():
         for route in _all_routes()
         for key in _route_keys(route)
     }
-    assert len(EXPECTED_OWNER_ROUTE_CONTRACT) == 36
+    assert len(EXPECTED_OWNER_ROUTE_CONTRACT) == 38
     _assert_route_contract(ROUTE_POLICIES, route_keys)
 
 
