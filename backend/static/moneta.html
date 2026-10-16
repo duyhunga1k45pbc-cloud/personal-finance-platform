@@ -371,9 +371,18 @@
       $('kpi-grid').innerHTML = state('empty','Đang tải...');
       $('accounts-grid').innerHTML = state('empty','Đang tải...');
       $('recent-body').innerHTML = $('transactions-body').innerHTML = '<tr><td colspan="6" class="empty">Đang tải...</td></tr>';
-      const [acc, tx, sum, proj] = await Promise.allSettled([
-        api('/accounts'), api('/transactions?limit=100'), api('/summary'), api('/projections/accounts')
+      const [acc, tx, sum, projStatus] = await Promise.allSettled([
+        api('/accounts'), api('/transactions?limit=100'), api('/summary'), api('/projections/status')
       ]);
+
+      let proj = {status: 'rejected'};
+
+      if (projStatus.status === 'fulfilled' &&
+          projStatus.value.status === 'FRESH') {
+        proj = await Promise.allSettled([
+          api('/projections/accounts')
+        ]).then(results => results[0]);
+      }
       if (!token) return;
       if (acc.status==='fulfilled') { accounts = acc.value; renderAccounts(); renderLegend(); }
       else { accounts = []; $('accounts-grid').innerHTML = setError('accounts', acc.reason); $('acct-legend').innerHTML = setError('accounts', acc.reason); }
