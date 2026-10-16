@@ -193,6 +193,9 @@
       });
       if (!response.ok) throw new Error('Không thể đổi authorization code (HTTP ' + response.status + ').');
       const tokens = await response.json();
+
+
+
       if (typeof tokens.access_token !== 'string' || !tokens.access_token) {
         throw new Error('Keycloak không trả về access token.');
       }

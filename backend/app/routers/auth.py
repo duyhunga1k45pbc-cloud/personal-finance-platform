@@ -67,6 +67,7 @@ def _verified_identity(credentials):
     if external is None:
         raise _unauthorized()
 
+
     return (
         "oidc",
         (external["issuer"], external["subject"]),
