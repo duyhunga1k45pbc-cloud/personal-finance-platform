@@ -265,7 +265,7 @@ def test_last_subscriber_cancels_poller():
     asyncio.run(scenario())
 
 
-def test_postgres_commit_during_subscribe_no_missing_event(monkeypatch):
+def test_postgres_commit_during_subscribe_no_missing_event_with_shared_engine(monkeypatch):
     import uuid
 
     from app.activity_feed_service import append_activity_event
@@ -361,7 +361,7 @@ def test_postgres_commit_during_subscribe_no_missing_event(monkeypatch):
     asyncio.run(isolated_scenario())
 
 
-def test_postgres_commit_during_subscribe_no_missing_event(monkeypatch):
+def test_postgres_commit_during_subscribe_no_missing_event_with_dedicated_null_pool(monkeypatch):
     import uuid
 
     from app.activity_feed_service import append_activity_event
