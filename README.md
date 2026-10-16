@@ -4,29 +4,30 @@
 
 This project explores how financial state can remain consistent and recoverable when requests retry, concurrent operations conflict, transactions fail, external evidence disagrees, or execution conditions change.
 
-The backend implements financial event modeling, concurrency control, transactional idempotency, reconciliation, recovery tooling, authorization, and optional Redis caching. The repository includes PostgreSQL-backed integration tests, deterministic failure-injection scenarios, and performance measurements for selected operations.
+The backend implements financial event modeling, concurrency control, transactional idempotency, reconciliation, recovery tooling, resource-scoped RBAC/ABAC authorization, a durable activity feed with shared SSE delivery, and optional Redis caching. The repository includes PostgreSQL-backed integration tests, deterministic failure-injection scenarios, and performance measurements for selected operations.
 
 **Project status:** Engineering portfolio and experimental application. Not production-deployed.
 
-**Quick navigation:** [Over-refund](#case-study-preventing-concurrent-over-refunds) · [Redis revision cache](#case-study-transaction-consistent-redis-caching) · [Connection pool RCA](#case-study-connection-pool-starvation) · [Index & pagination](#case-study-deterministic-pagination-and-postgresql-indexing) · [Architecture](#system-structure) · [Security](#security-boundaries) · [Verification](#test-results-and-coverage)
+**Quick navigation:** [Over-refund](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-preventing-concurrent-over-refunds) · [Redis revision cache](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-transaction-consistent-redis-caching) · [Connection pool RCA](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-connection-pool-starvation) · [Index & pagination](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-deterministic-pagination-and-postgresql-indexing) · [Architecture](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#system-structure) · [Security](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#security-boundaries) · [Verification](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#test-results-and-coverage)
 
 ---
 
 ## Engineering Highlights
 
-| Area | Engineering evidence |
-| --- | --- |
-| **Financial correctness** | PostgreSQL locking, idempotent commands, append-only history, reconciliation |
-| **Cache consistency** | PostgreSQL-revisioned Redis keys, ownership-before-cache checks, fault injection |
-| **Query behavior** | Deterministic pagination and measured composite-index optimization |
-| **Reliability** | Connection-pool lifecycle, failure injection, recovery and migration checks |
-| **Security** | FastAPI policy and resource ownership enforcement; optional Kong/Keycloak integration labs |
-| **Verification** | PostgreSQL and Redis integration tests, async experiments, gateway full-stack E2E |
-| **Demo** | Moneta read-only interface backed by real financial APIs |
+| **Area**                  | **Engineering evidence**                                                                   |
+| ------------------------- | ------------------------------------------------------------------------------------------ |
+| **Financial correctness** | PostgreSQL locking, idempotent commands, append-only history, reconciliation               |
+| **Cache consistency**     | PostgreSQL-revisioned Redis keys, ownership-before-cache checks, fault injection           |
+| **Query behavior**        | Deterministic pagination and measured composite-index optimization                         |
+| **Reliability**           | Connection-pool lifecycle, async resource isolation, recovery and migration checks         |
+| **Security**              | FastAPI route policies, account-sharing RBAC/ABAC; optional Kong/Keycloak labs             |
+| **Event delivery**        | Durable activity feed, shared SSE fan-out, cursor replay and shutdown tests                |
+| **Verification**          | PostgreSQL/Redis tests, race-condition regressions, gateway full-stack E2E                 |
+| **Demo**                  | Moneta read-only interface backed by real financial APIs                                   |
 
-**Latest reported local backend suite:** **347 passed, 0 failed, 0 skipped in 136.83 seconds**, using PostgreSQL-backed tests and real Redis integration.
+**Historical local backend suite:** **347 passed, 0 failed, 0 skipped in 136.83 seconds**, using PostgreSQL-backed tests and real Redis integration.
 
-These local results are not tied to a verified commit-specific CI run. CI evidence is documented separately below.
+A later GitHub pull request shows successful Backend CI and Gateway Full-Stack E2E checks after the SSE lifecycle test fixes. See the commit-specific evidence below; the screenshot does not expose the exact backend test count for that run.
 
 The reported results apply to tested scenarios; they do not establish exhaustive correctness or production readiness.
 
@@ -138,7 +139,7 @@ Database triggers advance the revision in the same transaction as inserts into p
 
 A rollback rolls back the revision as well.
 
-```text
+```
 Provider writer transaction
   |
   +-- Insert transaction / evidence
@@ -161,6 +162,7 @@ Authorized listing GET
            v             v
       Return cached   Query PostgreSQL
       response        and populate Redis
+
 ```
 
 An in-flight reader can repopulate an older revision key, but subsequent requests look up the newer revision.
@@ -182,10 +184,10 @@ PostgreSQL and Redis integration tests cover:
 
 A controlled local experiment using 20 users, 300 transactions per connection, and 6 concurrent clients produced:
 
-| Workload | Before Redis cache | After Redis cache |
-| --- | ---: | ---: |
-| Read-only traffic | 144 RPS | 271 RPS |
-| Mixed read/write traffic | 126 RPS | 198 RPS |
+| **Workload**             | **Before Redis cache** | **After Redis cache** |
+| ------------------------ | ---------------------- | --------------------- |
+| Read-only traffic        | 144 RPS                | 271 RPS               |
+| Mixed read/write traffic | 126 RPS                | 198 RPS               |
 
 These synthetic results depend on cache hit rate and are not production SLOs.
 
@@ -216,10 +218,10 @@ At sufficiently high concurrency, this produced **connection pool starvation**, 
 
 ### Evaluated Approaches
 
-| Approach | Observed result | Trade-off |
-| --- | --- | --- |
-| Overlapping authentication and business sessions | Pool starvation under tested load | Unnecessary simultaneous connections |
-| Single shared session | Removed observed pool exhaustion | Authentication and business share transaction lifecycle |
+| **Approach**                                         | **Observed result**                           | **Trade-off**                                            |
+| ---------------------------------------------------- | --------------------------------------------- | -------------------------------------------------------- |
+| Overlapping authentication and business sessions     | Pool starvation under tested load             | Unnecessary simultaneous connections                     |
+| Single shared session                                | Removed observed pool exhaustion              | Authentication and business share transaction lifecycle  |
 | **Short-lived auth session + immutable `Principal`** | **Selected; no pool timeouts in tested runs** | Sequential checkout with separate transaction boundaries |
 
 ### The Selected Design
@@ -246,6 +248,30 @@ This establishes the tested lifecycle improvement, not unlimited throughput or p
 
 - `backend/app/routers/auth.py`
 - `backend/tests/test_auth_session_lifecycle.py`
+
+---
+
+## Case Study: Durable Activity Feed and Shared SSE Lifecycle
+
+Financial transactions require a durable record of activity before connected clients can reliably receive updates. The activity feed is persisted in PostgreSQL alongside committed financial changes; SSE is a delivery mechanism rather than the source of truth.
+
+### Correctness and Scaling Boundary
+
+The shared-stream implementation uses process-local polling and subscriber fan-out to avoid a separate database polling loop for every connected client. Database-backed cursors support replay after reconnect. Verified scenarios include concurrent event ordering, subscription handoff, user isolation, bounded subscriber queues, and poller shutdown.
+
+### Integration Failure and Resolution
+
+A Python 3.12 full-suite run exposed an async database connection/event-loop lifecycle failure that focused SSE tests had not reproduced. Subsequent lifecycle isolation tests addressed cross-loop resource reuse. Entering application lifespan correctly also exposed process-local `DRAINING` state leaking between tests; test fixtures now restore that state at test boundaries.
+
+The changes preserve production connection pooling, startup fail-closed behavior, and financial transaction semantics. The later pull-request checks show Backend CI and Gateway Full-Stack E2E passing. These results validate the tested integration paths, not production SSE availability or multi-instance delivery guarantees.
+
+**Implementation references:**
+
+- `backend/app/activity_feed_reader.py`
+- `backend/app/routers/activity_shared_stream.py`
+- `backend/tests/test_activity_stream.py`
+- `backend/tests/test_activity_shared_stream.py`
+- `backend/tests/test_activity_stream_lifecycle.py`
 
 ---
 
@@ -276,7 +302,7 @@ The application filters by `user_id` and sorts by transaction ID.
 
 Schematic query:
 
-```sql
+```
 SELECT ...
 FROM transactions
 JOIN financial_events ON ...
@@ -287,7 +313,7 @@ LIMIT :limit OFFSET :skip;
 
 The audit evaluated a composite B-tree index:
 
-```sql
+```
 CREATE INDEX CONCURRENTLY
 ON transactions (user_id, id);
 ```
@@ -302,12 +328,12 @@ Selected `EXPLAIN (ANALYZE, BUFFERS)` results from a synthetic PostgreSQL audit 
 
 Median of nine warm-cache runs.
 
-| Request/query component | Before index | After index |
-| --- | ---: | ---: |
-| User with ~100 transactions, first page | 21.93 ms | 0.02 ms |
-| User with ~10,000 transactions, first page | 27.24 ms | 19.24 ms |
-| User with ~10,000 transactions, offset 5,000 | 36.77 ms | 20.80 ms |
-| User with ~100,000 transactions, offset 50,000 | 17.66 ms | 17.60 ms |
+| **Request/query component**                     | **Before index** | **After index** |
+| ----------------------------------------------- | ---------------- | --------------- |
+| User with \~100 transactions, first page        | 21.93 ms         | 0.02 ms         |
+| User with \~10,000 transactions, first page     | 27.24 ms         | 19.24 ms        |
+| User with \~10,000 transactions, offset 5,000   | 36.77 ms         | 20.80 ms        |
+| User with \~100,000 transactions, offset 50,000 | 17.66 ms         | 17.60 ms        |
 
 These are **SQL execution measurements**, not end-to-end HTTP latency.
 
@@ -338,25 +364,26 @@ The audit also identified four redundant non-unique indexes. They were not remov
 
 Personal Finance Platform is implemented as a **modular monolith**.
 
-The architecture keeps financial business rules, transaction boundaries, and authoritative state explicit without introducing distributed infrastructure unnecessary for the project's current scope.
+The architecture keeps financial business rules, transaction boundaries, and authoritative state explicit without introducing distributed infrastructure unnecessary for the project's current scope. The SSE activity feed remains part of the modular monolith, with process-local shared polling rather than a distributed message broker.
 
 Kong Gateway and Keycloak are optional external integration components, not independently deployed financial business services.
 
 ### Component Responsibilities
 
-| Component | Responsibility |
-| --- | --- |
-| FastAPI routers | HTTP handling, authentication dependencies, validation, responses |
-| Business services | Financial operations, invariants, causal rules, transaction coordination |
-| Canonical financial state | Authoritative events, entries, and relationships |
-| Financial history | Persistent historical evidence of state changes |
-| Provider integration | Ingestion, normalization, reconciliation |
-| Derived projections | Rebuildable balances and summaries |
-| Operational mechanisms | Idempotency, readiness, migrations, auditing, recovery |
+| **Component**             | **Responsibility**                                                       |
+| ------------------------- | ------------------------------------------------------------------------ |
+| FastAPI routers           | HTTP handling, authentication dependencies, validation, responses        |
+| Business services         | Financial operations, invariants, causal rules, transaction coordination |
+| Canonical financial state | Authoritative events, entries, and relationships                         |
+| Financial history         | Persistent historical evidence of state changes                          |
+| Provider integration      | Ingestion, normalization, reconciliation                                 |
+| Derived projections       | Rebuildable balances and summaries                                       |
+| Operational mechanisms    | Idempotency, readiness, migrations, auditing, recovery                   |
+| Activity delivery          | PostgreSQL activity feed, SSE replay, shared process-local subscribers   |
 
 ### Financial State Flow
 
-```text
+```
 External Provider Evidence      Client Financial Commands
           |                                |
           v                                |
@@ -386,6 +413,7 @@ External Provider Evidence      Client Financial Commands
                    v             v
               Append-only    Rebuildable
                 History      Projections
+
 ```
 
 Normalization does **not** make provider observations authoritative financial events.
@@ -419,6 +447,7 @@ The backend implements:
 - Declared route authorization policies.
 - Immutable authenticated `Principal` objects.
 - SQL-level ownership filtering.
+- Account-sharing roles and grants with resource-scoped RBAC/ABAC checks.
 - Ownership checks before joins, counts, pagination, and aggregation.
 - PostgreSQL-backed authorization and cross-user tests.
 
@@ -426,7 +455,7 @@ The backend implements:
 
 - `backend/app/authorization.py`
 - `backend/app/routers/auth.py`
-- [`backend/SECURITY_V1.md`](backend/SECURITY_V1.md)
+- [`backend/SECURITY_V1.md`](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/blob/main/backend/SECURITY_V1.md)
 
 ### Optional Gateway and Identity Labs
 
@@ -434,15 +463,15 @@ Kong and Keycloak are **optional integration experiments**, not prerequisites fo
 
 The Gateway Lab has two explicit modes.
 
-| Capability | HTTP Infrastructure Lab | External Authorization Lab |
-| --- | --- | --- |
-| Configuration | `gateway/compose.http.yml` | `gateway/compose.internal.yml` |
-| API routing | Kong | Kong |
-| JWT verification | Kong | Kong |
-| Request correlation / infrastructure behavior | Enabled in HTTP Lab | Separate pilot configuration |
-| External authorization | **Not used** | Kong external-authorization integration |
-| Financial resource ownership | FastAPI | FastAPI |
-| Financial domain invariants | Financial Core | Financial Core |
+| **Capability**                                | **HTTP Infrastructure Lab** | **External Authorization Lab**          |
+| --------------------------------------------- | --------------------------- | --------------------------------------- |
+| Configuration                                 | `gateway/compose.http.yml`  | `gateway/compose.internal.yml`          |
+| API routing                                   | Kong                        | Kong                                    |
+| JWT verification                              | Kong                        | Kong                                    |
+| Request correlation / infrastructure behavior | Enabled in HTTP Lab         | Separate pilot configuration            |
+| External authorization                        | **Not used**                | Kong external-authorization integration |
+| Financial resource ownership                  | FastAPI                     | FastAPI                                 |
+| Financial domain invariants                   | Financial Core              | Financial Core                          |
 
 **HTTP Infrastructure Lab**
 
@@ -458,7 +487,7 @@ This is not an organization-wide authorization platform or reusable cross-servic
 
 Both modes proxy to the same FastAPI backend. Neither changes financial transactions or canonical domain invariants.
 
-See [`gateway/README.md`](gateway/README.md) for setup, login-route scope, limitations, and signing-key rotation.
+See [`gateway/README.md`](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/blob/main/gateway/README.md) for setup, login-route scope, limitations, and signing-key rotation.
 
 ### Schema and Migration Safety
 
@@ -472,24 +501,24 @@ These mechanisms do not establish zero-downtime schema evolution.
 
 ## Test Results and Coverage
 
-The repository includes unit, integration, concurrency, failure-injection, and end-to-end tests.
+The repository includes unit, integration, concurrency, failure-injection, SSE lifecycle, authorization, and end-to-end tests.
 
 Database-sensitive scenarios use PostgreSQL. Optional cache tests include real Redis integration.
 
 ### Local Test Results
 
-| Verification | Reported result |
-| --- | --- |
-| Backend test suite | **347 passed, 0 failed, 0 skipped** |
-| Kong authorization integration suite | **8 passed** |
-| Gateway full-stack E2E | **2 passed** |
-| Gateway Lab static configuration tests | **2 passed** |
-| Targeted backend authorization/security/OIDC tests | **71 passed** |
-| Native-async correction experiment | **5 passed** |
+| **Verification**                                   | **Reported result**                 |
+| -------------------------------------------------- | ----------------------------------- |
+| Backend test suite                                 | **347 passed, 0 failed, 0 skipped** |
+| Kong authorization integration suite               | **8 passed**                        |
+| Gateway full-stack E2E                             | **2 passed**                        |
+| Gateway Lab static configuration tests             | **2 passed**                        |
+| Targeted backend authorization/security/OIDC tests | **71 passed**                       |
+| Native-async correction experiment                 | **5 passed**                        |
 
 These are **separate test runs**. Their counts must not be summed into a single suite result.
 
-The full backend result was obtained locally in 136.83 seconds using PostgreSQL-backed tests and real Redis.
+The historical full backend result was obtained locally in 136.83 seconds using PostgreSQL-backed tests and real Redis. Newer CI checks reflect a later code revision and must not be conflated with this local count.
 
 ### Gateway Verification
 
@@ -511,15 +540,18 @@ This manual smoke test does not prove dedicated cross-user E2E coverage for the 
 
 The following commit-specific CI results are separate from local test counts.
 
-| Commit | Workflow | Result |
-| --- | --- | --- |
-| `4292cb2` | Kong Authorization Integration Tests | Passed |
-| `4292cb2` | Gateway Full-Stack E2E | Passed |
-| `4292cb2` | Backend CI | Passed |
-| `27bb173` | Gateway Full-Stack E2E | Passed |
-| `27bb173` | Backend CI | Passed |
+| **Commit** | **Workflow**                         | **Result** |
+| ---------- | ------------------------------------ | ---------- |
+| `4292cb2`  | Kong Authorization Integration Tests | Passed     |
+| `4292cb2`  | Gateway Full-Stack E2E               | Passed     |
+| `4292cb2`  | Backend CI                           | Passed     |
+| `27bb173`  | Gateway Full-Stack E2E               | Passed     |
+| `27bb173`  | Backend CI                           | Passed     |
+| `f767456`  | Backend CI (pull request)            | Passed     |
+| `f767456`  | Gateway Full-Stack E2E (pull request) | Passed     |
+| `f767456`  | Gateway Full-Stack E2E (push)         | Passed     |
 
-The dedicated Kong integration workflow did not run for commit `27bb173`.
+The dedicated Kong integration workflow did not run for commit `27bb173`. The three successful `f767456` checks are shown in the supplied PR screenshot; that screenshot does not give an exact backend pytest pass count or establish that the PR was merged.
 
 The authorization integration tests cover timeout, connection failure, malformed response, and HTTP 500 behavior under the External Authorization Lab.
 
@@ -555,7 +587,7 @@ The native-async experiment passed **5/5 tests**.
 
 It is not a production application rewrite or a native-async production correction endpoint.
 
-ASGI middleware tests also cover cancellation, request-context isolation, and process-local metrics.
+ASGI middleware tests also cover cancellation, request-context isolation, and process-local metrics. SSE integration tests additionally exercise loop ownership, pooled-engine disposal, cursor behavior, and process-local deployment-state isolation.
 
 ### Operational Verification
 
@@ -571,14 +603,14 @@ Moneta is a lightweight **HTML/CSS/JavaScript interface** served by FastAPI at `
 
 It is a presentation layer over existing APIs, **not the core engineering deliverable**.
 
-| Screen | Data source | V1 boundary |
-| --- | --- | --- |
-| Login | Keycloak OIDC Authorization Code + PKCE | Legacy password login is unavailable through Kong |
-| Dashboard | `GET /summary` | Current API summary |
-| Accounts | `GET /accounts`, `GET /projections/accounts` | Missing projections shown explicitly |
-| Transactions | `GET /transactions` | Read-only; first 100 oldest-by-ID results |
-| Reconciliation | `GET /reconciliations/{id}` | Lookup by ID, no listing endpoint |
-| Engineering | Six static cards | Not a live operations console |
+| **Screen**     | **Data source**                              | **V1 boundary**                                   |
+| -------------- | -------------------------------------------- | ------------------------------------------------- |
+| Login          | Keycloak OIDC Authorization Code + PKCE      | Legacy password login is unavailable through Kong |
+| Dashboard      | `GET /summary`                               | Current API summary                               |
+| Accounts       | `GET /accounts`, `GET /projections/accounts` | Missing projections shown explicitly              |
+| Transactions   | `GET /transactions`                          | Read-only; first 100 oldest-by-ID results         |
+| Reconciliation | `GET /reconciliations/{id}`                  | Lookup by ID, no listing endpoint                 |
+| Engineering    | Six static cards                             | Not a live operations console                     |
 
 The Engineering cards cover canonical financial state, idempotency and concurrency, append-only history, reconciliation, API security and authorization, and reliability verification.
 
@@ -597,20 +629,20 @@ The UI does not initiate financial writes in v1.
 
 ## Technology Stack
 
-| Layer | Technology |
-| --- | --- |
-| Language | Python |
-| API framework | FastAPI, Pydantic |
-| ORM | SQLAlchemy |
-| Primary database | PostgreSQL |
-| Migrations | Alembic |
-| Optional cache | Redis |
-| Gateway experiment | Kong |
-| Identity experiment | Keycloak |
-| Tests | pytest |
-| Demo UI | HTML, CSS, JavaScript |
+| **Layer**           | **Technology**        |
+| ------------------- | --------------------- |
+| Language            | Python                |
+| API framework       | FastAPI, Pydantic     |
+| ORM                 | SQLAlchemy (sync Financial Core; async SSE reader) |
+| Primary database    | PostgreSQL            |
+| Migrations          | Alembic               |
+| Optional cache      | Redis                 |
+| Gateway experiment  | Kong                  |
+| Identity experiment | Keycloak              |
+| Tests               | pytest                |
+| Demo UI             | HTML, CSS, JavaScript |
 
-Financial services primarily use synchronous SQLAlchemy. Native-async behavior is investigated separately.
+Financial services primarily use synchronous SQLAlchemy. The SSE activity reader uses SQLAlchemy async; separate native-async experiments do not constitute a full Financial Core rewrite.
 
 ---
 
@@ -628,7 +660,7 @@ Use separate development and disposable test databases. Some tests require datab
 
 From the `backend` directory:
 
-```bash
+```
 pip install -r requirements.txt
 pip install -r requirements-test.txt
 ```
@@ -639,7 +671,7 @@ Set `DATABASE_URL` to a database intended for the current operation.
 
 Example:
 
-```bash
+```
 export DATABASE_URL="postgresql://USER:PASSWORD@localhost:5432/finance_dev_db"
 ```
 
@@ -647,7 +679,7 @@ Use a separate disposable database for tests.
 
 ### Apply Migrations
 
-```bash
+```
 alembic upgrade head
 ```
 
@@ -659,14 +691,14 @@ Do not bypass database-safety checks when preparing a test environment.
 
 From the `backend` directory:
 
-```bash
+```
 export DATABASE_URL="postgresql://USER:PASSWORD@localhost:5432/finance_test_db"
 python -m pytest -q
 ```
 
 For Redis integration tests, use a dedicated disposable Redis database:
 
-```bash
+```
 export REDIS_TEST_URL="redis://127.0.0.1:6379/15"
 export REQUIRE_REDIS_TESTS=1
 
@@ -679,7 +711,7 @@ Redis test fixtures may flush the configured test database.
 
 ### Start FastAPI
 
-```bash
+```
 uvicorn app.main:app --reload --port 8765
 ```
 
@@ -705,13 +737,13 @@ The two Gateway Labs use different Compose files.
 
 **HTTP Infrastructure Lab**
 
-```bash
+```
 docker compose -f gateway/compose.http.yml up -d --build
 ```
 
 **External Authorization Lab**
 
-```bash
+```
 docker compose -f gateway/compose.internal.yml up -d --build
 ```
 
@@ -725,7 +757,7 @@ For integrated Kong + Keycloak operation, clients authenticate using Keycloak OI
 
 Legacy password login and registration routes are unavailable through Kong.
 
-See [`gateway/README.md`](gateway/README.md) for complete setup and security boundaries.
+See [`gateway/README.md`](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/blob/main/gateway/README.md) for complete setup and security boundaries.
 
 ---
 
@@ -742,6 +774,7 @@ The current work does not establish:
 - Zero-downtime schema migration compatibility.
 - A fully native-async production application.
 - A production distributed event-processing platform.
+- Cross-instance SSE fan-out or production-scale long-lived connection availability.
 - Organization-wide authorization infrastructure.
 - Complete OAuth2/OIDC infrastructure.
 - Production operation of the Kong/Keycloak integration.
