@@ -8,26 +8,26 @@ The backend implements financial event modeling, concurrency control, transactio
 
 **Project status:** Engineering portfolio and experimental application. Not production-deployed.
 
-**Quick navigation:** [Over-refund](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-preventing-concurrent-over-refunds) · [Redis revision cache](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-transaction-consistent-redis-caching) · [Connection pool RCA](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-connection-pool-starvation) · [Index & pagination](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-deterministic-pagination-and-postgresql-indexing) · [Async lifecycle](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-async-sqlalchemy-event-loop-lifecycle-isolation) · [Architecture](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#system-structure) · [Security](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#security-boundaries) · [Verification](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#test-results-and-coverage)
+**Quick navigation:** [Over-refund](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-preventing-concurrent-over-refunds) · [Redis revision cache](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-transaction-consistent-redis-caching) · [Connection pool RCA](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-connection-pool-starvation) · [Index & pagination](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-deterministic-pagination-and-postgresql-indexing) · [Async lifecycle](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-async-sqlalchemy-event-loop-lifecycle-isolation) · [Architecture](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#system-structure) · [Security](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#security-boundaries) · [Authorization E2E](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#api-authorization-invariants-end-to-end-verification) · [Verification](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#test-results-and-coverage)
 
 ---
 
 ## Engineering Highlights
 
-| **Area**                  | **Engineering evidence**                                                                   |
-| ------------------------- | ------------------------------------------------------------------------------------------ |
-| **Financial correctness** | PostgreSQL locking, idempotent commands, append-only history, reconciliation               |
-| **Cache consistency**     | PostgreSQL-revisioned Redis keys, ownership-before-cache checks, fault injection           |
-| **Query behavior**        | Deterministic pagination and measured composite-index optimization                         |
-| **Reliability**           | Connection-pool lifecycle, async resource isolation, recovery and migration checks         |
-| **Security**              | FastAPI route policies, account-sharing RBAC/ABAC; optional Kong/Keycloak labs             |
-| **Event delivery**        | Durable activity feed, shared SSE fan-out, cursor replay and shutdown tests                |
-| **Verification**          | PostgreSQL/Redis tests, race-condition regressions, gateway full-stack E2E                 |
-| **Demo**                  | Moneta read-only interface backed by real financial APIs                                   |
+| **Area**                  | **Engineering evidence**                                                           |
+| ------------------------- | ---------------------------------------------------------------------------------- |
+| **Financial correctness** | PostgreSQL locking, idempotent commands, append-only history, reconciliation       |
+| **Cache consistency**     | PostgreSQL-revisioned Redis keys, ownership-before-cache checks, fault injection   |
+| **Query behavior**        | Deterministic pagination and measured composite-index optimization                 |
+| **Reliability**           | Connection-pool lifecycle, async resource isolation, recovery and migration checks |
+| **Security**              | Resource-scoped RBAC/ABAC, grant/revoke E2E, optional Kong/Keycloak labs     |
+| **Event delivery**        | Durable activity feed, shared SSE fan-out, cursor replay and shutdown tests        |
+| **Verification**          | PostgreSQL/Redis fault injection, concurrency and authorization/SSE E2E         |
+| **Demo**                  | Moneta read-only interface backed by real financial APIs                           |
 
 **Historical local backend suite:** **347 passed, 0 failed, 0 skipped in 136.83 seconds**, using PostgreSQL-backed tests and real Redis integration.
 
-The latest pull-request backend suite is reported as **358/358 passed (0 failed)** after the SSE lifecycle fixes. The supplied PR screenshot independently confirms that Backend CI and both Gateway Full-Stack E2E checks passed, but does not display the numerical pytest summary.
+**Latest GitHub Actions backend suite:** **359 passed, 0 failed, 537 warnings in 205.07 seconds**, as shown in the October 19, 2026 pytest CI output. The warnings are reported separately from test failures; their individual causes require separate review.
 
 The reported results apply to tested scenarios; they do not establish exhaustive correctness or production readiness.
 
@@ -162,6 +162,7 @@ Authorized listing GET
            v             v
       Return cached   Query PostgreSQL
       response        and populate Redis
+
 
 ```
 
@@ -300,7 +301,7 @@ The changes are confined to test isolation. Production connection pooling, fail-
 
 ### Verification Evidence
 
-The original Python 3.12 CI run reported **355 passed, 1 failed** on the cross-event-loop exception. After the first isolation patch, a later run reported **357 passed, 1 failed**: SSE tests passed, but an unrelated commit-response-loss test could not start because deployment state had leaked from SSE shutdown. The final state-isolation patch passed **7/7 targeted tests** locally. The latest pull-request backend run is reported as **358/358 passed (0 failed)**; the supplied screenshot confirms Backend CI and Gateway Full-Stack E2E workflows passed, but does not independently show the exact pytest count.
+The original Python 3.12 CI run reported **355 passed, 1 failed** on the cross-event-loop exception. After the first isolation patch, a later run reported **357 passed, 1 failed**: SSE tests passed, but an unrelated commit-response-loss test could not start because deployment state had leaked from SSE shutdown. The final state-isolation patch passed **7/7 targeted tests** locally. A subsequent October 19 GitHub Actions backend run completed with **359 passed, 537 warnings in 205.07 seconds**, confirmed by the pytest summary shown in the supplied CI screenshot.
 
 These results support the test-lifecycle correction in the evaluated configurations. They are not evidence that every async resource-lifecycle failure or production incident mode has been eliminated.
 
@@ -348,6 +349,7 @@ JOIN financial_events ON ...
 WHERE transactions.user_id = :user_id
 ORDER BY transactions.id ASC
 LIMIT :limit OFFSET :skip;
+
 ```
 
 The audit evaluated a composite B-tree index:
@@ -355,6 +357,7 @@ The audit evaluated a composite B-tree index:
 ```
 CREATE INDEX CONCURRENTLY
 ON transactions (user_id, id);
+
 ```
 
 The index was introduced through Alembic migration `l2c0d7e4a588`.
@@ -418,7 +421,7 @@ Kong Gateway and Keycloak are optional external integration components, not inde
 | Provider integration      | Ingestion, normalization, reconciliation                                 |
 | Derived projections       | Rebuildable balances and summaries                                       |
 | Operational mechanisms    | Idempotency, readiness, migrations, auditing, recovery                   |
-| Activity delivery          | PostgreSQL activity feed, SSE replay, shared process-local subscribers   |
+| Activity delivery         | PostgreSQL activity feed, SSE replay, shared process-local subscribers   |
 
 ### Financial State Flow
 
@@ -452,6 +455,7 @@ External Provider Evidence      Client Financial Commands
                    v             v
               Append-only    Rebuildable
                 History      Projections
+
 
 ```
 
@@ -495,6 +499,31 @@ The backend implements:
 - `backend/app/authorization.py`
 - `backend/app/routers/auth.py`
 - [`backend/SECURITY_V1.md`](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/blob/main/backend/SECURITY_V1.md)
+
+### API Authorization Invariants: End-to-End Verification
+
+Authorization correctness is not established by checking a single HTTP `200` or `403`. Access boundaries must remain enforced as resource-sharing permissions change, including when two users hold concurrent realtime connections.
+
+The project adds reproducible multi-user end-to-end regressions for **FastAPI resource-scoped authorization**, distinct from the optional Kong external-authorization lab.
+
+**Scenarios covered by the regression work:**
+
+- **Unauthorized cross-user access:** A user without an account-sharing grant cannot read another user's protected account.
+- **Grant lifecycle:** A `VIEWER` grant permits scoped reads without granting write authority.
+- **Revocation:** Removing the grant removes the previously granted resource access in the evaluated request sequence.
+- **Concurrent SSE isolation:** Simultaneously connected users receive user-scoped activity without cross-user event leakage in the tested scenario.
+- **Reproducible identity setup:** The E2E fixture configuration includes repeatable multi-user identity seeding and Keycloak realm data.
+
+**Evidence and implementation references:**
+
+- `gateway/e2e/test_authorization_invariants_e2e.py`
+- `gateway/e2e/seed_identity.py`
+- `gateway/e2e/realm.json`
+- Commit [`c22cc1b`](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/commit/c22cc1b93515c53d67b27aee4510ee03384f3b8b): cross-user authorization and concurrent SSE isolation.
+- Commit [`868b47b`](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/commit/868b47bf99e0be8db9b1a36afd16f5a85eb7f1a2): reproducible authorization/SSE E2E setup.
+- [PR #13](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/pull/13), merged on October 19, 2026, via [`463a95f`](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/commit/463a95f5df443b9574ff8e4804e338ffbc11ec06).
+
+This is scenario-specific regression evidence, not proof of every revocation-versus-delivery interleaving, SSE reconnect race, or cross-instance stream isolation. The dedicated E2E tests are separate from the **359-test backend suite** and should not be added to that count without a verified combined run.
 
 ### Optional Gateway and Identity Labs
 
@@ -548,18 +577,19 @@ Database-sensitive scenarios use PostgreSQL. Optional cache tests include real R
 
 | **Verification**                                   | **Reported result**                 |
 | -------------------------------------------------- | ----------------------------------- |
-| Backend test suite                                 | **347 passed, 0 failed, 0 skipped** |
+| Backend test suite (historical local)             | **347 passed, 0 failed, 0 skipped** |
 | Kong authorization integration suite               | **8 passed**                        |
 | Gateway full-stack E2E                             | **2 passed**                        |
 | Gateway Lab static configuration tests             | **2 passed**                        |
 | Targeted backend authorization/security/OIDC tests | **71 passed**                       |
 | Native-async correction experiment                 | **5 passed**                        |
+| Backend CI (October 19; latest shown)              | **359 passed, 0 failed; 537 warnings** |
 
 These are **separate test runs**. Their counts must not be summed into a single suite result.
 
-The historical full backend result was obtained locally in 136.83 seconds using PostgreSQL-backed tests and real Redis. The newer **358/358** figure refers to the reported pull-request CI run, not this historical local run.
+The historical full backend result was obtained locally in 136.83 seconds using PostgreSQL-backed tests and real Redis. The newer **359 passed** figure comes from the October 19 GitHub Actions pytest output, not this historical local run.
 
-**Latest pull-request Backend CI (reported): 358 passed / 358 collected, 0 failed.** The supplied GitHub screenshot verifies a successful workflow, though it does not show the numeric pytest summary.
+**Latest shown Backend CI pytest result (October 19, 2026): 359 passed, 0 failed, 537 warnings in 205.07 seconds.** The warning total is not a failure count; the screenshot does not establish whether all warnings have the same underlying cause.
 
 ### Gateway Verification
 
@@ -581,18 +611,20 @@ This manual smoke test does not prove dedicated cross-user E2E coverage for the 
 
 The following commit-specific CI results are separate from local test counts.
 
-| **Commit** | **Workflow**                         | **Result** |
-| ---------- | ------------------------------------ | ---------- |
-| `4292cb2`  | Kong Authorization Integration Tests | Passed     |
-| `4292cb2`  | Gateway Full-Stack E2E               | Passed     |
-| `4292cb2`  | Backend CI                           | Passed     |
-| `27bb173`  | Gateway Full-Stack E2E               | Passed     |
-| `27bb173`  | Backend CI                           | Passed     |
-| `f767456`  | Backend CI (pull request)            | Passed     |
+| **Commit** | **Workflow**                          | **Result** |
+| ---------- | ------------------------------------- | ---------- |
+| `4292cb2`  | Kong Authorization Integration Tests  | Passed     |
+| `4292cb2`  | Gateway Full-Stack E2E                | Passed     |
+| `4292cb2`  | Backend CI                            | Passed     |
+| `27bb173`  | Gateway Full-Stack E2E                | Passed     |
+| `27bb173`  | Backend CI                            | Passed     |
+| `f767456`  | Backend CI (pull request)             | Passed     |
 | `f767456`  | Gateway Full-Stack E2E (pull request) | Passed     |
 | `f767456`  | Gateway Full-Stack E2E (push)         | Passed     |
 
-The dedicated Kong integration workflow did not run for commit `27bb173`. The three successful `f767456` checks are shown in the supplied PR screenshot; that screenshot does not independently display the reported 358/358 pytest count or establish that the PR was merged.
+The dedicated Kong integration workflow did not run for commit `27bb173`. The three successful `f767456` checks refer to an earlier PR screenshot; PR #13 was subsequently merged on October 19, and a later backend CI screenshot displays 359 passing tests.
+
+On October 19, [PR #13](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/pull/13) merged cross-user authorization and SSE-isolation E2E regression coverage into `main` (merge commit `463a95f`). The new authorization-invariant suite is distinct from the Kong integration workflow and the backend pytest count. The supplied CI screenshot shows a completed backend pytest run with 359 passing tests; it does not independently enumerate each dedicated E2E scenario.
 
 The authorization integration tests cover timeout, connection failure, malformed response, and HTTP 500 behavior under the External Authorization Lab.
 
@@ -670,18 +702,18 @@ The UI does not initiate financial writes in v1.
 
 ## Technology Stack
 
-| **Layer**           | **Technology**        |
-| ------------------- | --------------------- |
-| Language            | Python                |
-| API framework       | FastAPI, Pydantic     |
+| **Layer**           | **Technology**                                     |
+| ------------------- | -------------------------------------------------- |
+| Language            | Python                                             |
+| API framework       | FastAPI, Pydantic                                  |
 | ORM                 | SQLAlchemy (sync Financial Core; async SSE reader) |
-| Primary database    | PostgreSQL            |
-| Migrations          | Alembic               |
-| Optional cache      | Redis                 |
-| Gateway experiment  | Kong                  |
-| Identity experiment | Keycloak              |
-| Tests               | pytest                |
-| Demo UI             | HTML, CSS, JavaScript |
+| Primary database    | PostgreSQL                                         |
+| Migrations          | Alembic                                            |
+| Optional cache      | Redis                                              |
+| Gateway experiment  | Kong                                               |
+| Identity experiment | Keycloak                                           |
+| Tests               | pytest                                             |
+| Demo UI             | HTML, CSS, JavaScript                              |
 
 Financial services primarily use synchronous SQLAlchemy. The SSE activity reader uses SQLAlchemy async; separate native-async experiments do not constitute a full Financial Core rewrite.
 
@@ -704,6 +736,7 @@ From the `backend` directory:
 ```
 pip install -r requirements.txt
 pip install -r requirements-test.txt
+
 ```
 
 ### Configure PostgreSQL
@@ -714,6 +747,7 @@ Example:
 
 ```
 export DATABASE_URL="postgresql://USER:PASSWORD@localhost:5432/finance_dev_db"
+
 ```
 
 Use a separate disposable database for tests.
@@ -722,6 +756,7 @@ Use a separate disposable database for tests.
 
 ```
 alembic upgrade head
+
 ```
 
 Migrations targeting the protected `finance_db` database require explicit authorization, as documented in `backend/DEPLOYMENT_V1.md`.
@@ -735,6 +770,7 @@ From the `backend` directory:
 ```
 export DATABASE_URL="postgresql://USER:PASSWORD@localhost:5432/finance_test_db"
 python -m pytest -q
+
 ```
 
 For Redis integration tests, use a dedicated disposable Redis database:
@@ -744,6 +780,7 @@ export REDIS_TEST_URL="redis://127.0.0.1:6379/15"
 export REQUIRE_REDIS_TESTS=1
 
 python -m pytest -q tests/test_redis_fault_injection_correctness.py
+
 ```
 
 Redis test fixtures may flush the configured test database.
@@ -754,6 +791,7 @@ Redis test fixtures may flush the configured test database.
 
 ```
 uvicorn app.main:app --reload --port 8765
+
 ```
 
 This starts standalone FastAPI only.
@@ -780,12 +818,14 @@ The two Gateway Labs use different Compose files.
 
 ```
 docker compose -f gateway/compose.http.yml up -d --build
+
 ```
 
 **External Authorization Lab**
 
 ```
 docker compose -f gateway/compose.internal.yml up -d --build
+
 ```
 
 Both configurations bind Kong to `127.0.0.1:8004` and must **not** run concurrently.
