@@ -1,4 +1,7 @@
 from __future__ import annotations
+import threading
+import app.routers.accounts as accounts_router
+from concurrent.futures import ThreadPoolExecutor
 
 import asyncio
 import uuid
@@ -302,3 +305,151 @@ def test_kong_account_pilot_routes_sharing_but_keeps_root_writes_blocked():
         AuthorizationRequest(method="GET", path="/transactions"),
         principal,
     )["allow"]
+
+
+def test_authz_grant_revoke_and_feed_isolation(monkeypatch):
+    """Account sharing must not widen financial activity visibility."""
+
+    owner_id, owner = _user("authz-owner")
+    viewer_id, viewer = _user("authz-viewer")
+    account = _account(owner)
+
+    account_path = f"/accounts/{account['id']}"
+
+    # Before grant: DENY
+    assert client.get(account_path, headers=viewer).status_code == 404
+
+    # Grant: ALLOW account metadata
+    assert _grant(owner, account["id"], viewer_id).status_code == 201
+    assert client.get(account_path, headers=viewer).status_code == 200
+
+    # Owner creates a financial transaction
+    created = client.post(
+        "/transactions",
+        json={
+            "amount": "42.00",
+            "description": "authz proof",
+            "category": "test",
+            "type": "income",
+            "account_id": account["id"],
+        },
+        headers=_command_headers(owner),
+    )
+
+    assert created.status_code in (200, 201), created.text
+    transaction_id = created.json()["id"]
+
+    # VIEWER cannot access owner's financial data
+    assert client.get(
+        f"/transactions/{transaction_id}",
+        headers=viewer,
+    ).status_code == 404
+
+    async def read_owner_and_viewer():
+        read_engine = create_async_engine(
+            activity_feed_reader._async_database_url()
+        )
+        try:
+            with monkeypatch.context() as patch:
+                patch.setattr(
+                    activity_feed_reader,
+                    "AsyncFeedSession",
+                    async_sessionmaker(
+                        bind=read_engine,
+                        expire_on_commit=False,
+                    ),
+                )
+                owner_rows = await activity_feed_reader.read_activity_events(
+                    user_id=owner_id,
+                    after_sequence=0,
+                )
+                viewer_rows = await activity_feed_reader.read_activity_events(
+                    user_id=viewer_id,
+                    after_sequence=0,
+                )
+                return owner_rows, viewer_rows
+        finally:
+            await read_engine.dispose()
+
+    # Verify persisted activity-feed isolation
+    owner_events, viewer_events = asyncio.run(read_owner_and_viewer())
+
+    assert transaction_id in {
+        event["resource_id"] for event in owner_events
+    }
+    assert viewer_events == []
+
+    # Revoke: DENY again
+    revoked = client.delete(
+        f"/accounts/{account['id']}/shares/{viewer_id}",
+        headers=owner,
+    )
+
+    assert revoked.status_code == 204, revoked.text
+    assert client.get(account_path, headers=viewer).status_code == 404
+
+    assert client.get(
+        f"/transactions/{transaction_id}",
+        headers=viewer,
+    ).status_code == 404
+
+    _, viewer_events_after_revoke = asyncio.run(
+        read_owner_and_viewer()
+    )
+
+    assert viewer_events_after_revoke == []
+
+
+def test_read_authorized_before_revoke_can_finish_after_commit(monkeypatch):
+    _, owner = _user("owner")
+    viewer_id, viewer = _user("viewer")
+    account = _account(owner)
+    account_id = account["id"]
+
+    assert _grant(owner, account_id, viewer_id).status_code == 201
+
+    authorization_checked = threading.Event()
+    continue_read = threading.Event()
+    original_get = accounts_router.get_readable_account
+
+    def controlled_get(db, user_id, requested_account_id):
+        result = original_get(db, user_id, requested_account_id)
+        if user_id == viewer_id and requested_account_id == account_id:
+            authorization_checked.set()
+            assert continue_read.wait(timeout=10), "READ was not released"
+        return result
+
+    monkeypatch.setattr(
+        accounts_router,
+        "get_readable_account",
+        controlled_get,
+    )
+
+    def viewer_read():
+        with TestClient(app) as reader:
+            return reader.get(
+                f"/accounts/{account_id}",
+                headers=viewer,
+            )
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(viewer_read)
+        try:
+            assert authorization_checked.wait(timeout=10)
+            revoked = client.delete(
+                f"/accounts/{account_id}/shares/{viewer_id}",
+                headers=owner,
+            )
+            assert revoked.status_code == 204
+        finally:
+            continue_read.set()
+
+        in_flight_response = future.result(timeout=10)
+
+    assert in_flight_response.status_code == 200
+
+    after_revoke = client.get(
+        f"/accounts/{account_id}",
+        headers=viewer,
+    )
+    assert after_revoke.status_code == 404
