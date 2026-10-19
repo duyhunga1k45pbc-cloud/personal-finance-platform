@@ -38,7 +38,8 @@ def test_reconnect_while_previous_poller_is_cancelling(monkeypatch):
         monkeypatch.setattr(shared, "_run_poller", controlled_poller)
 
         assert not shared._pollers
-        assert not shared._draining
+        # Isolate from draining state left by previous tests.
+        monkeypatch.setattr(shared, "_draining", False)
 
         try:
             old_poller, old_queue = await shared._subscribe(user_id)
