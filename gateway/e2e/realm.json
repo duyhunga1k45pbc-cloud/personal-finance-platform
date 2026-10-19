@@ -40,6 +40,22 @@
       "firstName": "E2E",
       "lastName": "Test",
       "requiredActions": []
+    },
+    {
+      "username": "e2e-user-b",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "e2e-b@example.test",
+      "firstName": "E2E",
+      "lastName": "UserB",
+      "requiredActions": [],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "e2e-b-test-password",
+          "temporary": false
+        }
+      ]
     }
   ]
 }
