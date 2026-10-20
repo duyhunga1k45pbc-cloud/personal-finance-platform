@@ -1,0 +1,331 @@
+:root {
+  font-family: Inter, system-ui, Arial, sans-serif;
+  color: #172033;
+  background: #f6f8fc;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+button {
+  cursor: pointer;
+  padding: 10px 16px;
+  border: 1px solid #ccd3df;
+  background: white;
+  border-radius: 8px;
+}
+
+button:hover:not(:disabled) {
+  background: #edf2fa;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+input {
+  display: block;
+  width: 100%;
+  padding: 12px;
+  margin-top: 6px;
+  margin-bottom: 16px;
+  border: 1px solid #ccd3df;
+  border-radius: 8px;
+}
+
+label {
+  display: block;
+  font-weight: 600;
+}
+
+.login-panel {
+  max-width: 420px;
+  margin: 110px auto;
+  padding: 32px;
+  background: white;
+  border: 1px solid #e0e5ed;
+  border-radius: 16px;
+}
+
+.login-panel form button {
+  width: 100%;
+}
+
+.app-shell {
+  max-width: 1100px;
+  padding: 32px 24px;
+  margin: auto;
+}
+
+.app-header,
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 20px;
+}
+
+.app-header {
+  margin-bottom: 40px;
+  border-bottom: 1px solid #dce2ed;
+  padding-bottom: 24px;
+}
+
+.app-header h1 {
+  margin-bottom: 4px;
+}
+
+.app-header p {
+  margin-top: 0;
+  color: #667085;
+}
+
+.account-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+}
+
+.account-card {
+  background: white;
+  border: 1px solid #e0e5ed;
+  border-radius: 12px;
+  padding: 24px;
+}
+
+.account-card h3 {
+  margin-top: 0;
+}
+
+.default-label {
+  display: inline-block;
+  background: #e9efff;
+  color: #2447a6;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.dashboard,
+.transactions-section {
+  margin-bottom: 36px;
+}
+
+.projection-status {
+  background: #e9f2ff;
+  border-radius: 8px;
+  padding: 14px;
+  margin: 16px 0;
+}
+
+.projection-warning {
+  background: #fff2d7;
+  color: #744b00;
+  padding: 16px;
+  border-radius: 8px;
+  margin: 16px 0;
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 14px;
+  margin: 20px 0;
+}
+
+.metric-card {
+  background: white;
+  border: 1px solid #e0e5ed;
+  border-radius: 12px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.metric-card span {
+  color: #667085;
+}
+
+.metric-card strong {
+  font-size: 24px;
+  overflow-wrap: anywhere;
+}
+
+.balance-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 14px;
+  background: white;
+  border-bottom: 1px solid #e0e5ed;
+}
+
+.transaction-card {
+  background: white;
+  border: 1px solid #e0e5ed;
+  border-radius: 10px;
+  padding: 16px;
+  margin: 12px 0;
+  overflow-x: auto;
+}
+
+.transaction-card pre {
+  margin: 0;
+  font-size: 13px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.pagination {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.sse-status {
+  display: inline-block;
+  margin-bottom: 20px;
+  padding: 10px 14px;
+  background: #e9f2ff;
+  border-radius: 8px;
+  font-size: 14px;
+}
+
+.create-transaction-section {
+  margin: 36px 0;
+  padding: 26px;
+  border: 1px solid #e0e5ed;
+  border-radius: 12px;
+  background: white;
+}
+
+.transaction-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 14px;
+  align-items: end;
+}
+
+.transaction-form select {
+  display: block;
+  width: 100%;
+  padding: 12px;
+  margin: 8px 0 16px;
+  border: 1px solid #ccd3df;
+  border-radius: 8px;
+  background: white;
+}
+
+.command-result {
+  margin-top: 16px;
+  padding: 14px;
+  background: #f1f5ff;
+  border-radius: 8px;
+}
+
+.command-actions {
+  display: flex;
+  gap: 12px;
+}
+
+.app-nav {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 28px;
+}
+
+.app-nav button {
+  border: 1px solid #d6ddea;
+  background: white;
+  padding: 12px 20px;
+  border-radius: 10px;
+  font-weight: 600;
+  color: #475467;
+}
+
+.app-nav button.active {
+  color: #1745a6;
+  background: #eaf0ff;
+  border-color: #adc3f8;
+}
+
+.app-nav button:hover {
+  background: #f0f4fb;
+}
+
+.finance-table th,
+.finance-table td {
+  padding: 14px 18px;
+}
+
+.finance-table td:nth-child(3) {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.balance-row strong {
+  font-variant-numeric: tabular-nums;
+}
+
+.activity-page {
+  margin-top: 20px;
+}
+
+.activity-toolbar {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  margin: 20px 0;
+  gap: 20px;
+}
+
+.activity-toolbar select {
+  display: block;
+  margin-top: 8px;
+  padding: 12px;
+  border: 1px solid #ccd3df;
+  border-radius: 8px;
+  background: white;
+}
+
+.activity-list {
+  display: grid;
+  gap: 16px;
+}
+
+.activity-card {
+  background: white;
+  border: 1px solid #e0e5ed;
+  border-radius: 12px;
+  padding: 22px;
+}
+
+.activity-card-header,
+.activity-metadata {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.activity-metadata {
+  margin-top: 16px;
+  color: #667085;
+  font-size: 13px;
+}
+
+.activity-entries {
+  border: 1px solid #edf0f5;
+  border-radius: 8px;
+  overflow: hidden;
+}
