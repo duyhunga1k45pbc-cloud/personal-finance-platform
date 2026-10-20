@@ -207,3 +207,7 @@ def get_summary(
         "total_expense": summary.total_expense,
         "balance": summary.balance,
     }
+
+# Read-only canonical financial activity API.
+from app.routers import financial_activity
+app.include_router(financial_activity.router)

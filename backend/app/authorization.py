@@ -218,6 +218,7 @@ ROUTE_POLICIES: dict[tuple[str, str], RoutePolicy] = {
     ("GET", "/accounts/{account_id}/shares"): _owner(ResourceType.ACCOUNT, Action.LIST),
     ("DELETE", "/accounts/{account_id}/shares/{user_id}"): _owner(ResourceType.ACCOUNT, Action.DELETE),
     ("GET", "/accounts/{account_id}"): _owner(ResourceType.ACCOUNT, Action.READ),
+    ("GET", "/financial-events"): _owner(ResourceType.CAUSAL_EVENT, Action.LIST),
     ("GET", "/transactions"): _owner(ResourceType.TRANSACTION, Action.LIST),
     ("GET", "/activity/stream"): _owner(ResourceType.USER, Action.READ),
     ("GET", "/activity/shared-stream"): _owner(ResourceType.USER, Action.READ),
