@@ -1,10 +1,12 @@
 export type Session = {
   token: string | null;
+  userId: number | null;
   generation: number;
 };
 
 let state: Session = {
   token: null,
+  userId: null,
   generation: 0,
 };
 
@@ -28,9 +30,10 @@ export const sessionStore = {
     };
   },
 
-  login(token: string) {
+  login(token: string, userId: number) {
     state = {
       token,
+      userId,
       generation: state.generation + 1,
     };
     emit();
@@ -39,6 +42,7 @@ export const sessionStore = {
   logout() {
     state = {
       token: null,
+      userId: null,
       generation: state.generation + 1,
     };
     emit();

@@ -40,6 +40,7 @@ export function CreateTransactionForm({ generation }: Props) {
   const [category, setCategory] = useState("");
   const [accountId, setAccountId] = useState("");
   const [busy, setBusy] = useState(false);
+  const [hasPending, setHasPending] = useState(false);
   const [outcome, setOutcome] = useState<Outcome>(null);
 
   const pending = useRef<PendingCommand | null>(null);
@@ -67,6 +68,7 @@ export function CreateTransactionForm({ generation }: Props) {
       }
 
       pending.current = null;
+      setHasPending(false);
 
       setOutcome({
         kind: "success",
@@ -158,6 +160,7 @@ export function CreateTransactionForm({ generation }: Props) {
     };
 
     pending.current = command;
+    setHasPending(true);
     void submitCommand(command);
   }
 
@@ -172,6 +175,7 @@ export function CreateTransactionForm({ generation }: Props) {
   function discardUncertainCommand() {
     // This does NOT undo a possibly committed transaction.
     pending.current = null;
+    setHasPending(false);
     setOutcome(null);
   }
 
@@ -184,7 +188,7 @@ export function CreateTransactionForm({ generation }: Props) {
           Type
           <select
             value={type}
-            disabled={busy || Boolean(pending.current)}
+            disabled={busy || hasPending}
             onChange={(event) =>
               setType(event.target.value as "income" | "expense")
             }
@@ -198,7 +202,7 @@ export function CreateTransactionForm({ generation }: Props) {
           Account
           <select
             value={selectedAccountId}
-            disabled={busy || Boolean(pending.current)}
+            disabled={busy || hasPending}
             onChange={(event) => setAccountId(event.target.value)}
             required
           >
@@ -217,7 +221,7 @@ export function CreateTransactionForm({ generation }: Props) {
             inputMode="decimal"
             placeholder="100000"
             value={amount}
-            disabled={busy || Boolean(pending.current)}
+            disabled={busy || hasPending}
             onChange={(event) => setAmount(event.target.value)}
             required
           />
@@ -227,7 +231,7 @@ export function CreateTransactionForm({ generation }: Props) {
           Category
           <input
             value={category}
-            disabled={busy || Boolean(pending.current)}
+            disabled={busy || hasPending}
             onChange={(event) => setCategory(event.target.value)}
             placeholder="Food"
             required
@@ -238,7 +242,7 @@ export function CreateTransactionForm({ generation }: Props) {
           Description
           <input
             value={description}
-            disabled={busy || Boolean(pending.current)}
+            disabled={busy || hasPending}
             onChange={(event) => setDescription(event.target.value)}
             placeholder="Lunch"
             required
@@ -247,7 +251,7 @@ export function CreateTransactionForm({ generation }: Props) {
 
         <button
           type="submit"
-          disabled={busy || Boolean(pending.current) || accounts.length === 0}
+          disabled={busy || hasPending || accounts.length === 0}
         >
           {busy ? "Submitting..." : "Create Transaction"}
         </button>

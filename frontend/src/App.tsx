@@ -65,11 +65,35 @@ function LoginForm() {
         return;
       }
 
-      // Drop any previous user's cached server data.
-      queryClient.clear();
+      // Verify identity with the backend, not with unverified browser claims.
+      const identityResponse = await fetch("/api/auth/me", {
+        headers: {
+          Authorization: `Bearer ${result.access_token}`,
+        },
+        signal: request.signal,
+      });
 
-      // Publish authenticated session.
-      sessionStore.login(result.access_token);
+      if (!identityResponse.ok) {
+        throw new Error("Unable to verify authenticated user");
+      }
+
+      const identity: unknown = await identityResponse.json();
+
+      if (
+        !identity ||
+        typeof identity !== "object" ||
+        !("id" in identity) ||
+        typeof identity.id !== "number" ||
+        !Number.isSafeInteger(identity.id) ||
+        identity.id <= 0
+      ) {
+        throw new Error("Invalid authenticated identity");
+      }
+
+      if (!mounted.current || request.signal.aborted) return;
+
+      queryClient.clear();
+      sessionStore.login(result.access_token, identity.id);
     } catch (err) {
       if (!mounted.current || request.signal.aborted) {
         return;

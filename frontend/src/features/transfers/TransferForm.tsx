@@ -24,6 +24,34 @@ type Outcome = {
   message: string;
 } | null;
 
+const storageKey = (userId: number) =>
+  `pfp:pending-transfer:v1:${userId}`;
+
+function isStoredTransfer(value: unknown): value is {
+  key: string;
+  payload: TransferCommand;
+} {
+  if (!value || typeof value !== "object") return false;
+
+  const v = value as Record<string, unknown>;
+  const p = v.payload;
+
+  if (typeof v.key !== "string" || !v.key) return false;
+  if (!p || typeof p !== "object") return false;
+
+  const command = p as Record<string, unknown>;
+
+  return (
+    typeof command.amount === "string" &&
+    typeof command.from_account_id === "number" &&
+    Number.isSafeInteger(command.from_account_id) &&
+    typeof command.to_account_id === "number" &&
+    Number.isSafeInteger(command.to_account_id) &&
+    (command.description === null ||
+      typeof command.description === "string")
+  );
+}
+
 const AMOUNT_RE = /^(?:0|[1-9]\d*)(?:\.\d{1,2})?$/;
 
 function validAmount(value: string): boolean {
@@ -35,6 +63,69 @@ function validAmount(value: string): boolean {
   if (whole.length + fraction.length > 18) return false;
 
   return /[1-9]/.test(whole + fraction);
+}
+
+type InitialRecovery = {
+  pending: PendingTransfer | null;
+  blocked: boolean;
+  outcome: Outcome;
+};
+
+function readInitialRecovery(
+  ownerId: number | null,
+  generation: number,
+): InitialRecovery {
+  if (ownerId === null) {
+    return { pending: null, blocked: true, outcome: null };
+  }
+
+  try {
+    const raw = sessionStorage.getItem(storageKey(ownerId));
+
+    if (!raw) {
+      return { pending: null, blocked: false, outcome: null };
+    }
+
+    const saved: unknown = JSON.parse(raw);
+
+    if (!isStoredTransfer(saved)) {
+      return {
+        pending: null,
+        blocked: true,
+        outcome: {
+          kind: "unknown",
+          message:
+            "Stored transfer could not be validated. Do not submit a duplicate.",
+        },
+      };
+    }
+
+    return {
+      pending: {
+        key: saved.key,
+        payload: saved.payload,
+        generation,
+      },
+      blocked: false,
+      outcome: {
+        kind: "unknown",
+        message:
+          "A previous transfer has an unconfirmed outcome. " +
+          "Retry the same transfer to resolve it.",
+      },
+    };
+  } catch {
+    return {
+      pending: null,
+      blocked: true,
+      outcome: {
+        kind: "unknown",
+        message:
+          "Pending transfer storage could not be read. " +
+          "Do not submit a duplicate until the outcome is verified.",
+      },
+    };
+  }
 }
 
 export function TransferForm({ generation }: Props) {
@@ -50,11 +141,25 @@ export function TransferForm({ generation }: Props) {
   const [toId, setToId] = useState("");
   const [amount, setAmount] = useState("");
   const [description, setDescription] = useState("");
+  const ownerId = sessionStore.getSnapshot().userId;
+
+  const [initialRecovery] = useState(() =>
+    readInitialRecovery(ownerId, generation)
+  );
+
   const [busy, setBusy] = useState(false);
-  const [outcome, setOutcome] = useState<Outcome>(null);
+  const [hasPending, setHasPending] = useState(
+    initialRecovery.pending !== null
+  );
+  const [recoveryBlocked] = useState(initialRecovery.blocked);
+  const [outcome, setOutcome] = useState<Outcome>(
+    initialRecovery.outcome
+  );
 
   const inFlight = useRef(false);
-  const pending = useRef<PendingTransfer | null>(null);
+  const pending = useRef<PendingTransfer | null>(
+    initialRecovery.pending
+  );
 
   const sourceId =
     fromId || String(accounts[0]?.id ?? "");
@@ -84,6 +189,10 @@ export function TransferForm({ generation }: Props) {
       }
 
       pending.current = null;
+      setHasPending(false);
+      if (ownerId !== null) {
+        sessionStorage.removeItem(storageKey(ownerId));
+      }
 
       setOutcome({
         kind: "success",
@@ -122,6 +231,10 @@ export function TransferForm({ generation }: Props) {
       if (error instanceof ApiError &&
           [400, 404, 422].includes(error.status)) {
         pending.current = null;
+        setHasPending(false);
+        if (ownerId !== null) {
+          sessionStorage.removeItem(storageKey(ownerId));
+        }
         setOutcome({
           kind: "rejected",
           message: `Transfer rejected: ${message}`,
@@ -147,7 +260,7 @@ export function TransferForm({ generation }: Props) {
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    if (inFlight.current || pending.current) return;
+    if (inFlight.current || pending.current || recoveryBlocked) return;
 
     const source = Number(sourceId);
     const destination = Number(destinationId);
@@ -186,7 +299,32 @@ export function TransferForm({ generation }: Props) {
       },
     };
 
+    if (ownerId === null) {
+      setOutcome({
+        kind: "rejected",
+        message: "Authenticated owner is unavailable.",
+      });
+      return;
+    }
+
+    try {
+      sessionStorage.setItem(
+        storageKey(ownerId),
+        JSON.stringify({
+          key: command.key,
+          payload: command.payload,
+        }),
+      );
+    } catch {
+      setOutcome({
+        kind: "rejected",
+        message: "Cannot persist transfer for recovery. No request was sent.",
+      });
+      return;
+    }
+
     pending.current = command;
+    setHasPending(true);
     void send(command);
   }
 
@@ -215,7 +353,7 @@ export function TransferForm({ generation }: Props) {
           From account
           <select
             value={sourceId}
-            disabled={busy || Boolean(pending.current)}
+            disabled={busy || hasPending || recoveryBlocked}
             onChange={(event) => {
               setFromId(event.target.value);
               setToId("");
@@ -233,7 +371,7 @@ export function TransferForm({ generation }: Props) {
           To account
           <select
             value={destinationId}
-            disabled={busy || Boolean(pending.current)}
+            disabled={busy || hasPending || recoveryBlocked}
             onChange={(event) => setToId(event.target.value)}
           >
             {accounts
@@ -252,7 +390,7 @@ export function TransferForm({ generation }: Props) {
             type="text"
             inputMode="decimal"
             value={amount}
-            disabled={busy || Boolean(pending.current)}
+            disabled={busy || hasPending || recoveryBlocked}
             onChange={(event) => setAmount(event.target.value)}
             placeholder="20000"
             required
@@ -264,7 +402,7 @@ export function TransferForm({ generation }: Props) {
           <input
             value={description}
             maxLength={255}
-            disabled={busy || Boolean(pending.current)}
+            disabled={busy || hasPending || recoveryBlocked}
             onChange={(event) => setDescription(event.target.value)}
             placeholder="Transfer to bank"
           />
@@ -274,7 +412,8 @@ export function TransferForm({ generation }: Props) {
           type="submit"
           disabled={
             busy ||
-            Boolean(pending.current) ||
+            hasPending ||
+            recoveryBlocked ||
             accounts.length < 2
           }
         >
