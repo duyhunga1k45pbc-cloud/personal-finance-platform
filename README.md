@@ -1,14 +1,16 @@
 # Personal Finance Platform
 
-**A correctness-focused financial backend engineering case study built with FastAPI, PostgreSQL, and SQLAlchemy.**
+**A fullstack financial engineering case study built with FastAPI, React, TypeScript, PostgreSQL, and SQLAlchemy, with a focus on correctness and failure recovery.**
 
 This project explores how financial state can remain consistent and recoverable when requests retry, concurrent operations conflict, transactions fail, external evidence disagrees, or execution conditions change.
 
-The backend implements financial event modeling, concurrency control, transactional idempotency, reconciliation, recovery tooling, resource-scoped RBAC/ABAC authorization, a durable activity feed with shared SSE delivery, and optional Redis caching. The repository includes PostgreSQL-backed integration tests, deterministic failure-injection scenarios, and performance measurements for selected operations.
+The backend implements financial event modeling, concurrency control, transactional idempotency, reconciliation, recovery tooling, resource-scoped RBAC/ABAC authorization, a durable activity feed with shared SSE delivery, and optional Redis caching. The repository includes PostgreSQL-backed integration tests, deterministic failure-injection scenarios, performance measurements for selected operations, and browser-level tests for the React client.
 
-**Project status:** Engineering portfolio and experimental application. Not production-deployed.
+The repository also includes a React/TypeScript application for authenticated account views, financial transactions, transfers, and activity history. The UI is an additional client for the existing financial APIs; financial invariants and authoritative records remain enforced by the backend.
 
-**Quick navigation:** [Over-refund](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-preventing-concurrent-over-refunds) · [Redis revision cache](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-transaction-consistent-redis-caching) · [Connection pool RCA](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-connection-pool-starvation) · [Index & pagination](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-deterministic-pagination-and-postgresql-indexing) · [Async lifecycle](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-async-sqlalchemy-event-loop-lifecycle-isolation) · [Architecture](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#system-structure) · [Security](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#security-boundaries) · [Authorization E2E](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#api-authorization-invariants-end-to-end-verification) · [Verification](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#test-results-and-coverage)
+**Project status:** Fullstack engineering portfolio and experimental application. Not production-deployed.
+
+**Quick navigation:** [React fullstack application](#react-fullstack-application) · [Browser recovery tests](#browser-recovery-and-playwright-verification) · [Over-refund](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-preventing-concurrent-over-refunds) · [Redis revision cache](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-transaction-consistent-redis-caching) · [Connection pool RCA](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-connection-pool-starvation) · [Index & pagination](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-deterministic-pagination-and-postgresql-indexing) · [Async lifecycle](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-async-sqlalchemy-event-loop-lifecycle-isolation) · [Architecture](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#system-structure) · [Security](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#security-boundaries) · [Authorization E2E](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#api-authorization-invariants-end-to-end-verification) · [Verification](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#test-results-and-coverage)
 
 ---
 
@@ -20,14 +22,18 @@ The backend implements financial event modeling, concurrency control, transactio
 | **Cache consistency**     | PostgreSQL-revisioned Redis keys, ownership-before-cache checks, fault injection   |
 | **Query behavior**        | Deterministic pagination and measured composite-index optimization                 |
 | **Reliability**           | Connection-pool lifecycle, async resource isolation, recovery and migration checks |
-| **Security**              | Resource-scoped RBAC/ABAC, grant/revoke E2E, optional Kong/Keycloak labs     |
+| **Security**              | Resource-scoped RBAC/ABAC, grant/revoke E2E, optional Kong/Keycloak labs           |
 | **Event delivery**        | Durable activity feed, shared SSE fan-out, cursor replay and shutdown tests        |
-| **Verification**          | PostgreSQL/Redis fault injection, concurrency and authorization/SSE E2E         |
+| **Verification**          | PostgreSQL/Redis fault injection, concurrency and authorization/SSE E2E            |
+| **Frontend**              | React/TypeScript application with authenticated financial workflows                |
+| **Browser recovery**      | Same-command transfer retry, reload recovery, and user-isolated pending state      |
 | **Demo**                  | Moneta read-only interface backed by real financial APIs                           |
 
 **Historical local backend suite:** **347 passed, 0 failed, 0 skipped in 136.83 seconds**, using PostgreSQL-backed tests and real Redis integration.
 
 **Latest GitHub Actions backend suite:** **359 passed, 0 failed, 537 warnings in 205.07 seconds**, as shown in the October 19, 2026 pytest CI output. The warnings are reported separately from test failures; their individual causes require separate review.
+
+**Latest reported frontend verification (local):** ESLint and Vite production build passed; **6/6 Playwright browser tests passed** using mocked HTTP responses. Backend transfer tests separately passed **9/9** and authorization-policy tests **39/39** against a dedicated PostgreSQL test database. These are independent runs and must not be added to the historical backend CI count.
 
 The reported results apply to tested scenarios; they do not establish exhaustive correctness or production readiness.
 
@@ -162,6 +168,7 @@ Authorized listing GET
            v             v
       Return cached   Query PostgreSQL
       response        and populate Redis
+
 
 
 ```
@@ -350,6 +357,7 @@ WHERE transactions.user_id = :user_id
 ORDER BY transactions.id ASC
 LIMIT :limit OFFSET :skip;
 
+
 ```
 
 The audit evaluated a composite B-tree index:
@@ -357,6 +365,7 @@ The audit evaluated a composite B-tree index:
 ```
 CREATE INDEX CONCURRENTLY
 ON transactions (user_id, id);
+
 
 ```
 
@@ -455,6 +464,7 @@ External Provider Evidence      Client Financial Commands
                    v             v
               Append-only    Rebuildable
                 History      Projections
+
 
 
 ```
@@ -575,15 +585,18 @@ Database-sensitive scenarios use PostgreSQL. Optional cache tests include real R
 
 ### Local Test Results
 
-| **Verification**                                   | **Reported result**                 |
-| -------------------------------------------------- | ----------------------------------- |
-| Backend test suite (historical local)             | **347 passed, 0 failed, 0 skipped** |
-| Kong authorization integration suite               | **8 passed**                        |
-| Gateway full-stack E2E                             | **2 passed**                        |
-| Gateway Lab static configuration tests             | **2 passed**                        |
-| Targeted backend authorization/security/OIDC tests | **71 passed**                       |
-| Native-async correction experiment                 | **5 passed**                        |
+| **Verification**                                   | **Reported result**                    |
+| -------------------------------------------------- | -------------------------------------- |
+| Backend test suite (historical local)              | **347 passed, 0 failed, 0 skipped**    |
+| Kong authorization integration suite               | **8 passed**                           |
+| Gateway full-stack E2E                             | **2 passed**                           |
+| Gateway Lab static configuration tests             | **2 passed**                           |
+| Targeted backend authorization/security/OIDC tests | **71 passed**                          |
+| Native-async correction experiment                 | **5 passed**                           |
 | Backend CI (October 19; latest shown)              | **359 passed, 0 failed; 537 warnings** |
+| Frontend Playwright (reported local, mocked APIs)   | **6 passed**                          |
+| Targeted transfer tests (dedicated PostgreSQL DB)   | **9 passed**                          |
+| Targeted authorization-policy tests (PostgreSQL DB) | **39 passed**                         |
 
 These are **separate test runs**. Their counts must not be summed into a single suite result.
 
@@ -670,6 +683,61 @@ There has been no production-traffic, availability, or real incident-response va
 
 ---
 
+## React Fullstack Application
+
+The `frontend/` directory contains a **React + TypeScript + Vite** application using **TanStack Query** for server-state synchronization. It consumes the FastAPI REST APIs rather than duplicating authoritative financial state in the browser.
+
+Implemented application workflows include:
+
+- Login followed by authenticated `GET /auth/me` identity verification; in-memory authentication state and logout cleanup.
+- Account listings, dashboard/summary views, financial activity history, and transaction creation forms.
+- Account-to-account transfers through `POST /transfers`, with an explicit `Idempotency-Key` header and a stable command payload.
+- Financial-event and account data refresh after confirmed operations.
+- Activity updates through the backend's existing SSE endpoint.
+
+The React application is **distinct from Moneta** (`GET /demo`), the earlier read-only HTML/JavaScript presentation interface documented below. The modular-monolith backend remains the authority for accounting rules, persistence, and resource authorization.
+
+### Browser Transfer Recovery
+
+A network failure after a financial transfer has committed creates an ambiguous outcome: the browser cannot infer from a missing response whether a transfer succeeded.
+
+The React transfer form therefore records a single pending transfer command in browser `sessionStorage` **before** sending it. A retry reuses the original idempotency key and unchanged payload, instead of manufacturing a new financial command. After a page reload, the user must authenticate again; recovery is made available only under the verified owner identity. Pending transfer state is isolated by user ID in the current browser session.
+
+A confirmed successful response clears the stored pending command. Transport failures and otherwise ambiguous outcomes retain it for retry. This client-side behavior complements, but does not replace, the backend's transactional idempotency enforcement.
+
+**Scope boundaries:** Recovery currently supports one pending transfer per user per browser-tab session. `sessionStorage` is not durable across all browser or device failures and does not coordinate separate tabs or devices. Transaction creation does not have the same persisted recovery contract. The implementation is not an offline payment queue or a production-grade cross-device transaction manager.
+
+**Implementation references:**
+
+- `frontend/src/App.tsx`
+- `frontend/src/auth/session.ts`
+- `frontend/src/features/transfers/TransferForm.tsx`
+- `frontend/src/features/transactions/CreateTransactionForm.tsx`
+- `frontend/src/api/transferCommands.ts`
+
+### Browser Recovery and Playwright Verification
+
+The reported local browser verification completed **6/6 Playwright tests**, with ESLint and the Vite/TypeScript production build passing. The scenarios include:
+
+- Login failures, authenticated identity lookup, and logout/session behavior.
+- An aborted transfer response followed by retry with the **same idempotency key and serialized request body**.
+- Reload and reauthentication followed by same-command transfer recovery.
+- Cross-user isolation: a different signed-in user cannot recover the previous user's pending transfer; the original user can recover it after signing back in.
+
+These Playwright tests **mock HTTP/API outcomes**. They validate browser behavior but do not independently prove PostgreSQL state after a real lost response. Separately reported dedicated-database backend runs passed **9/9 transfer tests** and **39/39 authorization-policy tests**. A combined, real-stack browser-to-database lost-response test has not been verified. Frontend CI status should not be inferred from these local results.
+
+**Test references:**
+
+- `frontend/e2e/auth.spec.ts`
+- `frontend/e2e/transfer-recovery.spec.ts`
+- `frontend/e2e/transfer-reload.spec.ts`
+- `frontend/e2e/transfer-cross-user.spec.ts`
+- `frontend/playwright.config.ts`
+- `backend/tests/test_transfers.py`
+- `backend/tests/test_authorization_policy.py`
+
+---
+
 ## Moneta Demo UI
 
 Moneta is a lightweight **HTML/CSS/JavaScript interface** served by FastAPI at `GET /demo`.
@@ -712,7 +780,8 @@ The UI does not initiate financial writes in v1.
 | Optional cache      | Redis                                              |
 | Gateway experiment  | Kong                                               |
 | Identity experiment | Keycloak                                           |
-| Tests               | pytest                                             |
+| Tests               | pytest, Playwright                                 |
+| React client        | React, TypeScript, Vite, TanStack Query           |
 | Demo UI             | HTML, CSS, JavaScript                              |
 
 Financial services primarily use synchronous SQLAlchemy. The SSE activity reader uses SQLAlchemy async; separate native-async experiments do not constitute a full Financial Core rewrite.
@@ -737,6 +806,7 @@ From the `backend` directory:
 pip install -r requirements.txt
 pip install -r requirements-test.txt
 
+
 ```
 
 ### Configure PostgreSQL
@@ -748,6 +818,7 @@ Example:
 ```
 export DATABASE_URL="postgresql://USER:PASSWORD@localhost:5432/finance_dev_db"
 
+
 ```
 
 Use a separate disposable database for tests.
@@ -756,6 +827,7 @@ Use a separate disposable database for tests.
 
 ```
 alembic upgrade head
+
 
 ```
 
@@ -771,6 +843,7 @@ From the `backend` directory:
 export DATABASE_URL="postgresql://USER:PASSWORD@localhost:5432/finance_test_db"
 python -m pytest -q
 
+
 ```
 
 For Redis integration tests, use a dedicated disposable Redis database:
@@ -780,6 +853,7 @@ export REDIS_TEST_URL="redis://127.0.0.1:6379/15"
 export REQUIRE_REDIS_TESTS=1
 
 python -m pytest -q tests/test_redis_fault_injection_correctness.py
+
 
 ```
 
@@ -791,6 +865,7 @@ Redis test fixtures may flush the configured test database.
 
 ```
 uvicorn app.main:app --reload --port 8765
+
 
 ```
 
@@ -810,6 +885,29 @@ Visit:
 - Moneta: `http://127.0.0.1:8765/demo`
 - Swagger: `http://127.0.0.1:8765/docs`
 
+### Run React Frontend
+
+In a separate terminal, from the repository root:
+
+```bash
+cd frontend
+npm ci
+npm run dev
+```
+
+The Vite development server runs on `http://127.0.0.1:5173` by default, with requests under `/api` proxied to the backend configured in `frontend/vite.config.ts`. **Check the proxy target and the FastAPI listening port before starting.** The standalone FastAPI example above uses port `8765`; if the Vite proxy targets port `8000`, either start FastAPI on that port or update the development proxy configuration.
+
+To validate the frontend:
+
+```bash
+cd frontend
+npm run lint
+npm run build
+npx playwright test --reporter=list
+```
+
+Playwright requires its browser dependencies (for example, `npx playwright install chromium`) and a running frontend server unless `frontend/playwright.config.ts` has a `webServer` command configured. The browser suite uses mocked API responses and does not require a live financial database.
+
 ### Optional Kong Gateway Labs
 
 The two Gateway Labs use different Compose files.
@@ -819,12 +917,14 @@ The two Gateway Labs use different Compose files.
 ```
 docker compose -f gateway/compose.http.yml up -d --build
 
+
 ```
 
 **External Authorization Lab**
 
 ```
 docker compose -f gateway/compose.internal.yml up -d --build
+
 
 ```
 
@@ -866,6 +966,9 @@ The current work does not establish:
 - Pagination for extremely large provider transaction histories.
 - Performance improvements for every PostgreSQL workload.
 - Complete financial write and reconciliation workflows through Moneta.
+- Durable cross-tab, cross-device, or multi-command browser transfer recovery.
+- Real-stack browser-level proof of committed-transfer recovery after an actual lost HTTP response.
+- Production frontend deployment or confirmed frontend CI execution.
 
 Some guarantees depend on application write paths consistently following the shared locking and transaction conventions.
 
