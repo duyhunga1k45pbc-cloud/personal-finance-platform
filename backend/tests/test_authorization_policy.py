@@ -25,6 +25,7 @@ from app.routers import (
     activity_stream,
     activity_shared_stream,
     causal_events,
+    financial_activity,
     gateway_authz,
     observability,
     projections,
@@ -46,6 +47,7 @@ ROUTERS = [
     transactions.router,
     transfers.router,
     causal_events.router,
+    financial_activity.router,
     reconciliations.router,
     observability.router,
     projections.router,
@@ -71,6 +73,7 @@ EXPECTED_OWNER_ROUTE_CONTRACT = {
         Action.DELETE,
     ),
     ("GET", "/accounts/{account_id}"): (ResourceType.ACCOUNT, Action.READ),
+    ("GET", "/financial-events"): (ResourceType.CAUSAL_EVENT, Action.LIST),
     ("GET", "/transactions"): (ResourceType.TRANSACTION, Action.LIST),
     ("GET", "/transactions/{transaction_id}"): (ResourceType.TRANSACTION, Action.READ),
     ("GET", "/transactions/{transaction_id}/history"): (ResourceType.TRANSACTION, Action.READ),
@@ -261,7 +264,7 @@ def test_independent_route_contract_matches_policies_and_route_inventory():
         for route in _all_routes()
         for key in _route_keys(route)
     }
-    assert len(EXPECTED_OWNER_ROUTE_CONTRACT) == 42
+    assert len(EXPECTED_OWNER_ROUTE_CONTRACT) == 43
     _assert_route_contract(ROUTE_POLICIES, route_keys)
 
 
