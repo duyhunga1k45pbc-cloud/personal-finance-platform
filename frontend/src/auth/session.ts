@@ -39,6 +39,12 @@ export const sessionStore = {
     emit();
   },
 
+  updateToken(token: string) {
+    if (!state.token || !state.userId) return;
+    state = { ...state, token };
+    emit();
+  },
+
   logout() {
     state = {
       token: null,

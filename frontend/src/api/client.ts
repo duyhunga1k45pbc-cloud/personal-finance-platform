@@ -1,4 +1,9 @@
 import { sessionStore } from "../auth/session";
+import {
+  AuthenticationError,
+  expireSessionIfCurrent,
+  getAccessToken,
+} from "../auth/keycloak";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -15,10 +20,18 @@ export async function api<T>(
   options: RequestInit = {}
 ): Promise<T> {
   const headers = new Headers(options.headers);
-  const token = sessionStore.getSnapshot().token;
+  let generation: number;
+  let token: string;
 
-  if (token) {
+  try {
+    token = await getAccessToken();
+    generation = sessionStore.getSnapshot().generation;
     headers.set("Authorization", `Bearer ${token}`);
+  } catch (error) {
+    if (error instanceof AuthenticationError) {
+      throw new ApiError(401, "Authentication is required");
+    }
+    throw error;
   }
 
   const response = await fetch(`/api${path}`, {
@@ -27,6 +40,7 @@ export async function api<T>(
   });
 
   if (!response.ok) {
+    if (response.status === 401) expireSessionIfCurrent(generation, token);
     throw new ApiError(
       response.status,
       `Request failed: ${response.status}`

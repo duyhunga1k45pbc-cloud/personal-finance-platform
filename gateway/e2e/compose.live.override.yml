@@ -1,0 +1,116 @@
+# Self-contained Compose project for the real browser Financial Insights E2E.
+# Every network, container, and data volume is scoped to the runner's project.
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${PFP_E2E_DATABASE_USER:?required}
+      POSTGRES_PASSWORD: ${PFP_E2E_DATABASE_PASSWORD:?required}
+      POSTGRES_DB: ${PFP_E2E_DATABASE_NAME:?required}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "psql -v ON_ERROR_STOP=1 -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\" -Atqc 'SELECT 1' >/dev/null",
+        ]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    restart: "no"
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    command:
+      - start-dev
+      - --import-realm
+      - --hostname=${PFP_E2E_KEYCLOAK_HOSTNAME:?required}
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${PFP_E2E_KEYCLOAK_ADMIN_PASSWORD:?required}
+      KC_HTTP_ENABLED: "true"
+    volumes:
+      - ${PFP_E2E_REALM_FILE:?required}:/opt/keycloak/data/import/pfp-e2e-realm.json:ro
+    ports:
+      - "127.0.0.1:${PFP_E2E_KEYCLOAK_PORT:?required}:8080"
+    restart: "no"
+
+  api:
+    image: ${PFP_E2E_API_IMAGE:?required}
+    build:
+      context: ../../backend
+      dockerfile: Dockerfile
+    environment:
+      APP_ENV: development
+      PYTHONPATH: /app
+      DATABASE_URL: ${PFP_E2E_DATABASE_URL:?required}
+      SECRET_KEY: ${PFP_E2E_API_SECRET:?required}
+      JWT_ALGORITHM: HS256
+      OIDC_ISSUER: ${PFP_E2E_OIDC_ISSUER:?required}
+      OIDC_JWKS_URL: http://keycloak:8080/realms/pfp-e2e/protocol/openid-connect/certs
+      OIDC_AUDIENCE: pfp-api
+      OIDC_CLIENT_ID: moneta
+      PFP_AI_SERVICE_URL: http://ai-service:8091
+      PFP_AI_INTERNAL_TOKEN: ${PFP_E2E_AI_INTERNAL_TOKEN:?required}
+      PFP_E2E_DATABASE_NAME: ${PFP_E2E_DATABASE_NAME:?required}
+      PFP_E2E_TEST_SUBJECT: ${PFP_E2E_TEST_SUBJECT-}
+      PFP_E2E_TEST_EMAIL: ${PFP_E2E_TEST_EMAIL-}
+    volumes:
+      - ${PFP_E2E_SEED_SCRIPT:?required}:/tmp/seed_live_owner.py:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ai-service:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=2)",
+        ]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    networks:
+      default:
+        aliases:
+          - pfp-api-compose
+    restart: "no"
+
+  ai-service:
+    image: ${PFP_E2E_AI_IMAGE:?required}
+    build:
+      context: ../../ai-service
+      dockerfile: Dockerfile
+    environment:
+      PFP_AI_INTERNAL_TOKEN: ${PFP_E2E_AI_INTERNAL_TOKEN:?required}
+    expose:
+      - "8091"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8091/health"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+    restart: "no"
+
+  kong:
+    image: kong:3.9.4
+    environment:
+      KONG_DATABASE: "off"
+      KONG_PROXY_LISTEN: "0.0.0.0:8000"
+      KONG_PLUGINS: "bundled"
+      KONG_DECLARATIVE_CONFIG: /etc/kong/kong-http.yml
+    ports:
+      - "127.0.0.1:${PFP_E2E_KONG_PORT:?required}:8000"
+    volumes:
+      - ${PFP_E2E_KONG_CONFIG:?required}:/etc/kong/kong-http.yml:ro
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: "no"
+
+volumes:
+  postgres_data:

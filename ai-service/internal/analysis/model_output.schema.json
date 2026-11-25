@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pfp.invalid/schemas/analysis-output-v1.json",
+  "title": "PFP deterministic analysis output v1",
+  "description": "Structured claims referencing only facts and evidence from one trusted Financial Context v2 snapshot.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["output_schema_version", "snapshot_id", "findings"],
+  "properties": {
+    "output_schema_version": { "const": 1 },
+    "snapshot_id": {
+      "type": "string",
+      "pattern": "^snap_v2_[0-9a-f]{64}$"
+    },
+    "findings": {
+      "type": "array",
+      "maxItems": 6,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["metric", "fact_id", "evidence_id", "claim_code"],
+        "properties": {
+          "metric": {
+            "enum": [
+              "total_income",
+              "total_expense",
+              "balance",
+              "net_worth",
+              "account_count",
+              "expense_to_income_percent"
+            ]
+          },
+          "fact_id": {
+            "type": "string",
+            "pattern": "^fact_v2_[0-9a-f]{64}$"
+          },
+          "evidence_id": {
+            "type": "string",
+            "pattern": "^evidence_v2_[0-9a-f]{64}$"
+          },
+          "claim_code": {
+            "enum": ["VALUE_REPORTED", "RATIO_UNDEFINED_ZERO_INCOME"]
+          }
+        }
+      }
+    }
+  }
+}

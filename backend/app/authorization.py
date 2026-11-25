@@ -238,6 +238,8 @@ ROUTE_POLICIES: dict[tuple[str, str], RoutePolicy] = {
     ("GET", "/projections/status"): _owner(ResourceType.PROJECTION, Action.READ),
     ("GET", "/projections/summary"): _owner(ResourceType.PROJECTION, Action.READ),
     ("GET", "/projections/accounts"): _owner(ResourceType.PROJECTION, Action.LIST),
+    ("GET", "/analytics/context"): _owner(ResourceType.PROJECTION, Action.READ),
+    ("POST", "/analytics/insights"): _owner(ResourceType.PROJECTION, Action.READ),
     ("POST", "/provider-connections"): _owner(_P, Action.CREATE),
     ("GET", "/provider-connections"): _owner(_P, Action.LIST),
     ("GET", "/provider-connections/{connection_id}"): _owner(_P, Action.READ),
