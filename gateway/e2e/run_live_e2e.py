@@ -141,6 +141,47 @@ def parse_url(value: str):
     return parts
 
 
+def validate_database_name(database: str) -> None:
+    if not DATABASE_NAME.fullmatch(database) or database in FORBIDDEN_DATABASES:
+        raise RunnerError("Generated test database name failed its safety check")
+
+
+def validate_database_target(
+    value: str, *, database: str, user: str
+) -> None:
+    target = parse_url(value)
+    if (
+        target.hostname != "postgres"
+        or target.port != 5432
+        or target.path.lstrip("/") != database
+        or target.username != user
+    ):
+        raise RunnerError(
+            "Effective FastAPI/Alembic URL is not the generated test database"
+        )
+
+
+def validate_database_identity(
+    identity: str, *, database: str, user: str
+) -> None:
+    if identity != f"{database}|{user}":
+        raise RunnerError("Connected PostgreSQL identity differs from the E2E target")
+
+
+def validate_alembic_revision(current: str, heads: str) -> None:
+    head_ids = set(
+        re.findall(r"^([A-Za-z0-9_.-]+)\s+\(head\)", heads, re.MULTILINE)
+    )
+    if not head_ids or not all(
+        re.search(
+            rf"(?<![A-Za-z0-9_.-]){re.escape(head)}(?![A-Za-z0-9_.-])",
+            current,
+        )
+        for head in head_ids
+    ):
+        raise RunnerError("New disposable database is not at the source Alembic head")
+
+
 def make_database_url(user: str, password: str, database: str) -> str:
     return (
         f"postgresql://{quote(user, safe='')}:{quote(password, safe='')}"
@@ -449,8 +490,7 @@ def main() -> int:
     run_id = time.strftime("%Y%m%d%H%M%S") + secrets.token_hex(6)
     project = f"pfp-live-{run_id}"
     db_name = f"pfp_e2e_auto_{run_id}"
-    if not DATABASE_NAME.fullmatch(db_name) or db_name in FORBIDDEN_DATABASES:
-        raise RunnerError("Generated test database name failed its safety check")
+    validate_database_name(db_name)
 
     ports = set()
     while len(ports) < 3:
@@ -520,16 +560,11 @@ def main() -> int:
         assert_no_project_resources(project)
         config = json.loads(run(compose + ["config", "--format", "json"]).stdout)
         api_environment = config["services"]["api"]["environment"]
-        effective_db = parse_url(api_environment["DATABASE_URL"])
-        if (
-            effective_db.hostname != "postgres"
-            or effective_db.port != 5432
-            or effective_db.path.lstrip("/") != db_name
-            or effective_db.username != database_user
-        ):
-            raise RunnerError(
-                "Effective FastAPI/Alembic URL is not the generated test database"
-            )
+        validate_database_target(
+            api_environment["DATABASE_URL"],
+            database=db_name,
+            user=database_user,
+        )
         if api_environment.get("OIDC_ISSUER") != issuer:
             raise RunnerError("Effective FastAPI OIDC issuer does not match Keycloak")
         if config["services"]["postgres"].get("ports"):
@@ -574,8 +609,13 @@ def main() -> int:
             120,
         )
         identity = postgres_identity()
-        if identity.returncode or identity.stdout.strip() != f"{db_name}|{database_user}":
+        if identity.returncode:
             raise RunnerError("Connected PostgreSQL identity differs from the E2E target")
+        validate_database_identity(
+            identity.stdout.strip(),
+            database=db_name,
+            user=database_user,
+        )
         table_count = postgres_exec(
             compose,
             "psql",
@@ -650,13 +690,7 @@ def main() -> int:
             compose + ["run", "--rm", "--no-deps", "api", "alembic", "heads"],
             label="Reading source migration head",
         ).stdout
-        head_ids = set(
-            re.findall(r"^([A-Za-z0-9_.-]+)\s+\(head\)", heads, re.MULTILINE)
-        )
-        if not head_ids or not all(
-            re.search(rf"\b{re.escape(head)}\b", current) for head in head_ids
-        ):
-            raise RunnerError("New disposable database is not at the source Alembic head")
+        validate_alembic_revision(current, heads)
         print("Alembic migration completed on the isolated E2E database.")
 
         env_values.update(
