@@ -3,7 +3,7 @@ name: System Browser E2E
 on:
   push:
     branches:
-      - feature/system-e2e-ci
+      - main
   pull_request:
     branches:
       - main
