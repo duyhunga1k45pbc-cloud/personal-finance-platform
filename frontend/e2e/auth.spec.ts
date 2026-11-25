@@ -1,165 +1,128 @@
-import { test, expect } from "@playwright/test";
+import { expect, test } from "@playwright/test";
+import { installKeycloakMock } from "./support/keycloak";
 
-test("unauthenticated user sees login form", async ({ page }) => {
+test("unauthenticated user is offered Keycloak sign in without password fields", async ({ page }) => {
   await page.goto("/");
 
   await expect(
-    page.getByRole("button", { name: /login|sign in/i })
+    page.getByRole("button", { name: "Sign in with Keycloak" }),
   ).toBeVisible();
+  await expect(page.locator('input[type="password"]')).toHaveCount(0);
+  await expect(page.locator('input[type="email"]')).toHaveCount(0);
 });
 
-test("invalid credentials do not create an authenticated session", async ({ page }) => {
-  let loginRequests = 0;
+test("authorization-code login validates the owner through /auth/me and logout clears the session", async ({ page }) => {
+  const oidc = await installKeycloakMock(page);
+  let identityAuthorization = "";
+  let protectedAuthorization = "";
+  let localPasswordRequests = 0;
 
-  await page.route("**/api/auth/login", async (route) => {
-    loginRequests++;
-
-    await route.fulfill({
-      status: 401,
-      contentType: "application/json",
-      body: JSON.stringify({
-        detail: "Invalid credentials",
-      }),
-    });
-  });
-
-  await page.goto("/");
-
-  await page.locator('input[type="email"]').fill("invalid@example.com");
-  await page.locator('input[type="password"]').fill("wrong-password");
-
-  await page.getByRole("button", { name: /login|sign in/i }).click();
-
-  await expect.poll(() => loginRequests).toBe(1);
-
-  await expect(
-    page.getByRole("button", { name: /login|sign in/i })
-  ).toBeVisible();
-
-  await expect(
-    page.getByRole("button", { name: /logout|log out/i })
-  ).toHaveCount(0);
-});
-
-test("successful login allows logout and clears authenticated UI", async ({ page }) => {
-  let authorizationHeader: string | undefined;
-
-  await page.route("**/api/auth/login", async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        access_token: "playwright-test-token",
-        token_type: "bearer",
-      }),
-    });
-  });
-
-  // Other backend calls are mocked: no real financial data is accessed.
-  await page.route(
-    (url) => url.pathname.startsWith("/api/"),
-    async (route) => {
+  await page.route((url) => url.pathname.startsWith("/api/"), async (route) => {
     const request = route.request();
-    const url = new URL(request.url());
-
-    if (url.pathname === "/api/auth/login") {
-      return route.fallback();
+    const path = new URL(request.url()).pathname;
+    const authorization = request.headers().authorization ?? "";
+    if (path === "/api/auth/login") localPasswordRequests += 1;
+    if (path === "/api/auth/me") {
+      identityAuthorization = authorization;
+      const user = oidc.identityForAuthorization(authorization);
+      return user
+        ? route.fulfill({ json: { id: user.id, email: user.email } })
+        : route.fulfill({ status: 401, json: { detail: "unauthorized" } });
     }
-
-    authorizationHeader ??= request.headers()["authorization"];
-
-    if (url.pathname === "/api/auth/me") {
-      return route.fulfill({
-        json: { id: 101, email: "test@example.com" },
-      });
+    protectedAuthorization = authorization;
+    if (path.includes("/activity/")) return route.abort();
+    if (path === "/api/projections/status") {
+      return route.fulfill({ json: { status: "FRESH", generation: 1 } });
     }
-
-    if (url.pathname === "/api/accounts") {
-      return route.fulfill({ json: [] });
+    if (path === "/api/projections/summary") {
+      return route.fulfill({ json: { total_income: "0", total_expense: "0", balance: "0", net_worth: "0", account_count: 0 } });
     }
-
-    if (url.pathname === "/api/projections/status") {
-      return route.fulfill({
-        json: {
-          status: "FRESH",
-          generation: 1,
-          stored_fingerprint: "test",
-          current_fingerprint: "test",
-        },
-      });
-    }
-
-    if (url.pathname === "/api/projections/summary") {
-      return route.fulfill({
-        json: {
-          total_income: "0",
-          total_expense: "0",
-          balance: "0",
-          net_worth: "0",
-          account_count: 0,
-          generation: 1,
-        },
-      });
-    }
-
-    if (url.pathname === "/api/projections/accounts") {
-      return route.fulfill({ json: [] });
-    }
-
-    if (url.pathname.includes("/activity/")) {
-      return route.abort();
-    }
-
-    return route.fulfill({ json: {} });
-  });
-
-  page.on("pageerror", (error) => {
-    console.log("JS ERROR:", error.message);
-  });
-
-  page.on("console", (message) => {
-    if (message.type() === "error") {
-      console.log("CONSOLE ERROR:", message.text());
-    }
-  });
-
-  page.on("requestfailed", (request) => {
-    console.log("REQUEST FAILED:", request.url(), request.failure());
-  });
-
-  page.on("response", (response) => {
-    if (response.status() >= 400) {
-      console.log("HTTP ERROR:", response.status(), response.url());
-    }
+    return route.fulfill({ json: [] });
   });
 
   await page.goto("/");
+  await page.getByRole("button", { name: "Sign in with Keycloak" }).click();
 
-  console.log("CURRENT URL:", page.url());
-  console.log("PAGE TITLE:", await page.title());
-  console.log("VISIBLE BODY:", (await page.locator("body").innerText()).slice(0, 1500));
-  console.log("EMAIL INPUT COUNT:", await page.locator('input[type="email"]').count());
+  await expect(page.getByRole("button", { name: "Logout" })).toBeVisible();
+  await expect.poll(() => identityAuthorization).toMatch(/^Bearer /);
+  await expect.poll(() => protectedAuthorization).toBe(`Bearer ${oidc.latestAccessToken}`);
+  expect(oidc.authorizationRequestCount).toBe(1);
+  expect(localPasswordRequests).toBe(0);
 
-  await page.locator('input[type="email"]').fill("test@example.com");
-  await page.locator('input[type="password"]').fill("test-password");
+  const persisted = await page.evaluate(() => {
+    const all = [localStorage, sessionStorage];
+    return all.flatMap((storage) =>
+      Array.from({ length: storage.length }, (_, index) => {
+        const key = storage.key(index) ?? "";
+        return `${key}=${storage.getItem(key) ?? ""}`;
+      }),
+    ).join("\n");
+  });
+  expect(persisted).not.toContain(oidc.latestAccessToken);
+  expect(persisted).not.toContain("refresh_token");
 
-  await page.getByRole("button", { name: /login|sign in/i }).click();
+  await page.getByRole("button", { name: "Logout" }).click();
+  await expect(page.getByRole("button", { name: "Sign in with Keycloak" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Logout" })).toHaveCount(0);
+});
 
-  await expect(
-    page.getByRole("button", { name: /logout|log out/i })
-  ).toBeVisible();
+test("a token rejected by the backend cannot establish an owner session", async ({ page }) => {
+  await installKeycloakMock(page);
+  let identityCalls = 0;
+  await page.route("**/api/auth/me", async (route) => {
+    identityCalls += 1;
+    await route.fulfill({ status: 401, json: { detail: "invalid token" } });
+  });
 
-  await expect.poll(() => authorizationHeader).toBe(
-    "Bearer playwright-test-token"
-  );
+  await page.goto("/");
+  await page.getByRole("button", { name: "Sign in with Keycloak" }).click();
 
-  await page.getByRole("button", { name: /logout|log out/i }).click();
+  await expect.poll(() => identityCalls).toBe(1);
+  await expect(page.getByRole("button", { name: "Sign in with Keycloak" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Logout" })).toHaveCount(0);
+});
 
-  await expect(
-    page.getByRole("button", { name: /login|sign in/i })
-  ).toBeVisible();
+test("refreshes an expiring access token before an authenticated API request", async ({ page }) => {
+  const oidc = await installKeycloakMock(page, { accessTokenLifetimeSeconds: 5 });
+  let protectedAuthorization = "";
 
-  await expect(
-    page.getByRole("button", { name: /logout|log out/i })
-  ).toHaveCount(0);
+  await page.route((url) => url.pathname.startsWith("/api/"), async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    const authorization = route.request().headers().authorization ?? "";
+    if (path === "/api/auth/me") {
+      const user = oidc.identityForAuthorization(authorization);
+      return route.fulfill({ json: { id: user?.id ?? 0, email: user?.email ?? "" } });
+    }
+    if (path.includes("/activity/")) return route.abort();
+    protectedAuthorization = authorization;
+    return route.fulfill({ json: [] });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "Sign in with Keycloak" }).click();
+  await expect(page.getByRole("button", { name: "Logout" })).toBeVisible();
+  await expect.poll(() => oidc.refreshRequestCount).toBeGreaterThan(0);
+  await expect.poll(() => protectedAuthorization).toBe(`Bearer ${oidc.latestAccessToken}`);
+});
+
+test("failed token refresh clears the local authenticated UI", async ({ page }) => {
+  const oidc = await installKeycloakMock(page, {
+    accessTokenLifetimeSeconds: 5,
+    rejectRefresh: true,
+  });
+  await page.route((url) => url.pathname.startsWith("/api/"), async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/api/auth/me") {
+      const user = oidc.identityForAuthorization(route.request().headers().authorization);
+      return route.fulfill({ json: { id: user?.id ?? 0, email: user?.email ?? "" } });
+    }
+    if (path.includes("/activity/")) return route.abort();
+    return route.fulfill({ json: [] });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "Sign in with Keycloak" }).click();
+  await expect.poll(() => oidc.refreshRequestCount).toBeGreaterThan(0);
+  await expect(page.getByRole("button", { name: "Sign in with Keycloak" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Logout" })).toHaveCount(0);
 });

@@ -27,6 +27,7 @@ from app.routers import (
     causal_events,
     financial_activity,
     gateway_authz,
+    analytics,
     observability,
     projections,
     providers,
@@ -48,6 +49,7 @@ ROUTERS = [
     transfers.router,
     causal_events.router,
     financial_activity.router,
+    analytics.router,
     reconciliations.router,
     observability.router,
     projections.router,
@@ -100,6 +102,8 @@ EXPECTED_OWNER_ROUTE_CONTRACT = {
     ("GET", "/projections/status"): (ResourceType.PROJECTION, Action.READ),
     ("GET", "/projections/summary"): (ResourceType.PROJECTION, Action.READ),
     ("GET", "/projections/accounts"): (ResourceType.PROJECTION, Action.LIST),
+    ("GET", "/analytics/context"): (ResourceType.PROJECTION, Action.READ),
+    ("POST", "/analytics/insights"): (ResourceType.PROJECTION, Action.READ),
     ("POST", "/provider-connections"): (
         ResourceType.PROVIDER_CONNECTION,
         Action.CREATE,
@@ -264,7 +268,7 @@ def test_independent_route_contract_matches_policies_and_route_inventory():
         for route in _all_routes()
         for key in _route_keys(route)
     }
-    assert len(EXPECTED_OWNER_ROUTE_CONTRACT) == 43
+    assert len(EXPECTED_OWNER_ROUTE_CONTRACT) == 45
     _assert_route_contract(ROUTE_POLICIES, route_keys)
 
 
