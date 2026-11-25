@@ -5,6 +5,7 @@ import contextlib
 import time
 from pathlib import Path
 
+import httpx
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import FileResponse
 from sqlalchemy.exc import SQLAlchemyError
@@ -23,7 +24,7 @@ from app.observability import (
     reset_request_id,
     sanitize_request_id,
 )
-from app.routers import accounts, auth, causal_events, observability, projections, providers, reconciliations, transactions, transfers
+from app.routers import accounts, analytics, auth, causal_events, observability, projections, providers, reconciliations, transactions, transfers
 from app.routers import activity_stream
 from app.routers import activity_shared_stream
 from app.authorization import assert_only_policed_routes, enforce_declared_policy
@@ -31,14 +32,41 @@ from app.routers.auth import Principal, authorize_owner_principal, get_principal
 from app.security import settings
 
 app = FastAPI(
-    dependencies=[Depends(enforce_declared_policy)],
     title="Personal Finance API",
     description="Backend API quản lý thu chi cá nhân",
     version="1.0.0",
     docs_url=None if settings.is_production else "/docs",
     redoc_url=None if settings.is_production else "/redoc",
     openapi_url=None if settings.is_production else "/openapi.json",
+    dependencies=[Depends(enforce_declared_policy)],
 )
+
+
+@app.on_event("startup")
+async def start_ai_service_http_client():
+    app.state.ai_http_client = httpx.AsyncClient(
+        timeout=httpx.Timeout(
+            9.0,
+            connect=0.5,
+            read=9.0,
+            write=2.0,
+            pool=0.25,
+        ),
+        limits=httpx.Limits(
+            max_connections=20,
+            max_keepalive_connections=10,
+            keepalive_expiry=30.0,
+        ),
+        trust_env=False,
+    )
+
+
+@app.on_event("shutdown")
+async def close_ai_service_http_client():
+    client = getattr(app.state, "ai_http_client", None)
+    if client is not None:
+        await client.aclose()
+        del app.state.ai_http_client
 
 
 
@@ -169,6 +197,7 @@ app.include_router(causal_events.router)
 app.include_router(reconciliations.router)
 app.include_router(observability.router)
 app.include_router(projections.router)
+app.include_router(analytics.router)
 app.include_router(providers.router)
 app.include_router(gateway_authz_router)
 assert_only_policed_routes(app)
