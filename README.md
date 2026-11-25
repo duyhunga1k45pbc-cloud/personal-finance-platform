@@ -14,20 +14,19 @@ The Financial Core implements financial event modeling, concurrency control, tra
 
 ## Engineering Highlights
 
-| **Area**                  | **Engineering evidence**                                                           |
-| ------------------------- | ---------------------------------------------------------------------------------- |
-| **Financial correctness** | PostgreSQL locking, idempotent commands, append-only history, reconciliation       |
-| **Cache consistency**     | PostgreSQL-revisioned Redis keys, ownership-before-cache checks, fault injection   |
-| **Query behavior**        | Deterministic pagination and measured composite-index optimization                 |
-| **Reliability**           | Connection-pool lifecycle, async resource isolation, recovery and migration checks |
-| **Security**              | Resource-scoped RBAC/ABAC, grant/revoke E2E, Keycloak/Kong integration       |
-| **Event delivery**        | Durable activity feed, shared SSE fan-out, cursor replay and shutdown tests        |
-| **Verification**          | PostgreSQL/Redis fault injection, concurrency, integration, and real browser E2E |
-| **Demo**                  | Moneta read-only interface backed by real financial APIs                           |
+| **Area**                  | **Engineering evidence** |
+| ------------------------- | ------------------------ |
+| **Financial correctness** | Reproduced a concurrent over-refund violation; protected eligibility and writes with PostgreSQL row locks while preserving same-key retry behavior. |
+| **Cache consistency**     | Coupled Redis cache-key revisions to committed PostgreSQL changes; tested rollback, concurrent writers, and stale in-flight fills. |
+| **Query behavior**        | Fixed nondeterministic offset pagination; measured the effect and write cost of a composite PostgreSQL index. |
+| **Reliability**           | Investigated overlapping DB sessions, async event-loop reuse, and SSE lifecycle state leakage; added focused regression coverage. |
+| **Security**              | Enforced ownership-scoped RBAC/ABAC; exercised grant/revoke and concurrent SSE isolation, with Keycloak/Kong integration tests. |
+| **Event delivery**        | Persisted the activity feed in PostgreSQL; tested replay, bounded process-local SSE fan-out, and shutdown behavior. |
+| **AI analysis boundary**  | Kept financial facts in FastAPI; validated Go analysis findings against snapshot-bound facts and evidence using a deterministic development provider. |
+| **Provider concurrency**  | Bounded Go provider work to ten calls per process, with nonblocking overload rejection and cancellation tests using fakes. |
+| **Verification**          | Built isolated real-browser E2E across React, Keycloak, Kong, FastAPI, PostgreSQL, and Go; CI caught commit/source inconsistencies. |
 
-**Historical local backend suite:** **347 passed, 0 failed, 0 skipped in 136.83 seconds**, using PostgreSQL-backed tests and real Redis integration.
-
-**Historical GitHub Actions backend suite (October 19, 2026):** **359 passed, 0 failed, 537 warnings in 205.07 seconds**, as shown in the pytest CI output. The warnings are reported separately from test failures; their individual causes require separate review.
+**Verified GitHub Actions PR-head snapshot (`47dc6e2`, PR #17):** backend regression **383 passed (559 warnings)**; separate Redis integration selection **17 passed**; System Browser E2E runner unit tests **15 passed** and real browser E2E **1 passed**. Results belong to separate test selections and must not be added together. See [Automated System E2E on GitHub Actions](#automated-system-e2e-on-github-actions) for run links and scope.
 
 The reported results apply to tested scenarios; they do not establish exhaustive correctness or production readiness.
 
@@ -509,7 +508,7 @@ Playwright exercises real Keycloak login and API traffic; it does not mock authe
 
 ### Verification Evidence
 
-Local verification first passed the real browser flow, then focused runner unit tests exposed an Alembic revision-matching bug. After correcting the matcher, the real browser E2E passed again. The focused runner unit suite reported **15 passed**; it exercises database-name and identity guards, Alembic revision matching (including the hyphenated-prefix regression), runtime Keycloak configuration, RS256 key extraction, readiness failure sanitization, and project-scoped cleanup behavior. These unit tests are not full Docker fault injection.
+Local verification first passed the real browser flow; developing focused runner unit tests then exposed an Alembic revision-matching bug. After correcting the matcher, the real browser E2E passed again. The focused runner unit suite reported **15 passed**; it exercises database-name and identity guards, Alembic revision matching (including the hyphenated-prefix regression), runtime Keycloak configuration, RS256 key extraction, readiness failure sanitization, and project-scoped cleanup behavior. These unit tests are not full Docker fault injection.
 
 The later CI integration history and completed clean-checkout results are documented in [CI Integration and Regression Findings](#ci-integration-and-regression-findings) and [Automated System E2E on GitHub Actions](#automated-system-e2e-on-github-actions).
 
@@ -524,7 +523,7 @@ The Go service still uses a deterministic development provider. There is no real
 The integration work exposed source and commit consistency problems as well as application integration defects:
 
 1. A local real browser E2E run passed through Keycloak, Kong, FastAPI, PostgreSQL, and the Go deterministic provider.
-2. Focused runner unit tests passed and exposed the Alembic revision-matching bug at a hyphen boundary.
+2. Focused runner unit-test development exposed an Alembic revision-matching bug at a hyphen boundary; the corrected runner subsequently passed its unit tests.
 3. The real browser E2E passed again after the Alembic correction.
 4. An early GitHub Actions run failed because the runner unit-test file was absent from the pushed commit; the local working tree and that commit did not contain the same files ([run](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/actions/runs/45692600015)).
 5. Backend CI then encountered an import mismatch: analytics tests imported lifecycle functions that were not present in the committed `app.main` ([run](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/actions/runs/45692955692)).
@@ -666,7 +665,7 @@ The project adds reproducible multi-user end-to-end regressions for **FastAPI re
 - Commit [`868b47b`](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/commit/868b47bf99e0be8db9b1a36afd16f5a85eb7f1a2): reproducible authorization/SSE E2E setup.
 - [PR #13](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/pull/13), merged on October 19, 2026, via [`463a95f`](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/commit/463a95f5df443b9574ff8e4804e338ffbc11ec06).
 
-This is scenario-specific regression evidence, not proof of every revocation-versus-delivery interleaving, SSE reconnect race, or cross-instance stream isolation. The dedicated E2E tests are separate from the **359-test backend suite** and should not be added to that count without a verified combined run.
+This is scenario-specific regression evidence, not proof of every revocation-versus-delivery interleaving, SSE reconnect race, or cross-instance stream isolation. The dedicated authorization/SSE E2E selection is separate from the reported backend regression-suite counts (historically 359, and 383 on PR #17) and should not be added to either without a verified combined run.
 
 ### Optional Gateway and Identity Labs
 
@@ -788,7 +787,7 @@ PR #17, [“ci: add automated full-system E2E verification”](https://github.co
 
 These test counts belong to separate selections and are not added together. The System Browser E2E used a disposable Compose project and database, ran the real Keycloak-to-Kong-to-FastAPI-to-Go browser flow, and verified cleanup. It does not establish real LLM behavior, production reliability, or coverage of every failure mode.
 
-The successful rows above are PR-head results, not a claim that every workflow passed on merge commit `17900898f099b2b267b241d5de61322667317fc7`. At review time, the post-merge [Gateway Full-Stack E2E](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/actions/runs/45696767134) and [Kong Authorization Integration](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/actions/runs/45696767131) runs had passed, [Backend CI](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/actions/runs/45696767154) was still in progress, and no System Browser E2E run for the merge SHA was present in the inspected run list. No complete merged-commit CI pass is claimed.
+The successful rows above are PR-head results, not a claim that every workflow passed on merge commit `17900898f099b2b267b241d5de61322667317fc7`. In the documented post-merge check, [Gateway Full-Stack E2E](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/actions/runs/45696767134) and [Kong Authorization Integration](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/actions/runs/45696767131) had passed, while [Backend CI](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/actions/runs/45696767154) had not yet reached a recorded final result and no System Browser E2E run for that merge SHA was observed. This is a historical observation, not a statement of their current status; no complete merged-commit CI pass is claimed here.
 
 ---
 
@@ -830,7 +829,7 @@ There has been no production-traffic, availability, or real incident-response va
 
 ## Moneta Demo UI
 
-Moneta is a lightweight **HTML/CSS/JavaScript interface** served by FastAPI at `GET /demo`.
+Moneta is a lightweight **HTML/CSS/JavaScript demo interface** served by FastAPI at `GET /demo`. It is distinct from the separate React/TypeScript frontend used in the integrated System Browser E2E flow.
 
 It is a presentation layer over existing APIs, **not the core engineering deliverable**.
 
@@ -849,7 +848,7 @@ Browser JWTs are held only in memory. Logout clears displayed personal data.
 
 API errors produce visible error or empty states rather than fabricated fallback data.
 
-The UI does not initiate financial writes in v1.
+The Moneta demo UI does not initiate financial writes in v1; this constraint is not a claim about the separate React/TypeScript frontend.
 
 **Implementation references:**
 
@@ -882,7 +881,7 @@ Redis caching and the Keycloak/Kong integrations are optional infrastructure aro
 
 ### Prerequisites
 
-Python/pip and PostgreSQL are required.
+Python/pip and PostgreSQL are required for the standalone Financial Core instructions below. The full-system browser E2E has additional Docker, Node.js, and Playwright prerequisites described in its own section.
 
 Redis is optional at runtime and required for cache integration tests.
 
@@ -939,7 +938,7 @@ Do not bypass database-safety checks when preparing a test environment.
 From the `backend` directory:
 
 ```
-export DATABASE_URL="postgresql://USER:PASSWORD@localhost:5432/finance_test_db"
+export DATABASE_URL="postgresql://USER:PASSWORD@localhost:5432/finance_test"
 python -m pytest -q
 
 ```
@@ -1042,7 +1041,7 @@ Some guarantees depend on application write paths consistently following the sha
 
 Direct database writes or future code paths that bypass those conventions require separate verification.
 
-The repository emphasizes **implemented behavior, reproducible tests, engineering decisions, and explicit limitations**.
+The repository emphasizes **implemented behavior, reproducible tests, engineering decisions, and explicit limitations**. A passing clean-checkout CI run validates its tested commit and environment, not uncommitted local files or production deployment.
 
 In particular, surviving selected Redis failure scenarios does not prove that Redis can never contribute to a financial correctness defect.
 
