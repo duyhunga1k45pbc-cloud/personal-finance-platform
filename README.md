@@ -1,16 +1,14 @@
 # Personal Finance Platform
 
-**A fullstack financial engineering case study built with FastAPI, React, TypeScript, PostgreSQL, and SQLAlchemy, with a focus on correctness and failure recovery.**
+**A correctness-focused, experimental financial platform built around a FastAPI Financial Core, PostgreSQL, and SQLAlchemy.**
 
 This project explores how financial state can remain consistent and recoverable when requests retry, concurrent operations conflict, transactions fail, external evidence disagrees, or execution conditions change.
 
-The backend implements financial event modeling, concurrency control, transactional idempotency, reconciliation, recovery tooling, resource-scoped RBAC/ABAC authorization, a durable activity feed with shared SSE delivery, and optional Redis caching. The repository includes PostgreSQL-backed integration tests, deterministic failure-injection scenarios, performance measurements for selected operations, and browser-level tests for the React client.
+The Financial Core implements financial event modeling, concurrency control, transactional idempotency, reconciliation, recovery tooling, resource-scoped RBAC/ABAC authorization, a durable activity feed with shared SSE delivery, and optional Redis caching. The integrated PFP environment also includes a Go AI Analysis Service, a React/TypeScript frontend, Keycloak authentication, and Kong API gateway integration. Automated unit and integration suites are complemented by real browser E2E verification across the integrated flow.
 
-The repository also includes a React/TypeScript application for authenticated account views, financial transactions, transfers, and activity history. The UI is an additional client for the existing financial APIs; financial invariants and authoritative records remain enforced by the backend.
+**Project status:** Engineering portfolio and experimental application. Not production-deployed.
 
-**Project status:** Fullstack engineering portfolio and experimental application. Not production-deployed.
-
-**Quick navigation:** [React fullstack application](#react-fullstack-application) · [Browser recovery tests](#browser-recovery-and-playwright-verification) · [Over-refund](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-preventing-concurrent-over-refunds) · [Redis revision cache](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-transaction-consistent-redis-caching) · [Connection pool RCA](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-connection-pool-starvation) · [Index & pagination](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-deterministic-pagination-and-postgresql-indexing) · [Async lifecycle](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-async-sqlalchemy-event-loop-lifecycle-isolation) · [Architecture](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#system-structure) · [Security](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#security-boundaries) · [Authorization E2E](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#api-authorization-invariants-end-to-end-verification) · [Verification](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#test-results-and-coverage)
+**Quick navigation:** [Over-refund](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-preventing-concurrent-over-refunds) · [Redis revision cache](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-transaction-consistent-redis-caching) · [Connection pool RCA](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-connection-pool-starvation) · [Index & pagination](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-deterministic-pagination-and-postgresql-indexing) · [Async lifecycle](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#case-study-async-sqlalchemy-event-loop-lifecycle-isolation) · [Snapshot-bound evidence](#case-study-snapshot-bound-evidence-validation) · [Provider concurrency](#case-study-bounded-provider-concurrency-and-cancellation) · [Reproducible Insights E2E](#case-study-from-integration-drift-to-reproducible-e2e) · [Architecture](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#system-structure) · [Security](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#security-boundaries) · [Authorization E2E](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#api-authorization-invariants-end-to-end-verification) · [Verification](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform#test-results-and-coverage)
 
 ---
 
@@ -22,18 +20,14 @@ The repository also includes a React/TypeScript application for authenticated ac
 | **Cache consistency**     | PostgreSQL-revisioned Redis keys, ownership-before-cache checks, fault injection   |
 | **Query behavior**        | Deterministic pagination and measured composite-index optimization                 |
 | **Reliability**           | Connection-pool lifecycle, async resource isolation, recovery and migration checks |
-| **Security**              | Resource-scoped RBAC/ABAC, grant/revoke E2E, optional Kong/Keycloak labs           |
+| **Security**              | Resource-scoped RBAC/ABAC, grant/revoke E2E, Keycloak/Kong integration       |
 | **Event delivery**        | Durable activity feed, shared SSE fan-out, cursor replay and shutdown tests        |
-| **Verification**          | PostgreSQL/Redis fault injection, concurrency and authorization/SSE E2E            |
-| **Frontend**              | React/TypeScript application with authenticated financial workflows                |
-| **Browser recovery**      | Same-command transfer retry, reload recovery, and user-isolated pending state      |
+| **Verification**          | PostgreSQL/Redis fault injection, concurrency, integration, and real browser E2E |
 | **Demo**                  | Moneta read-only interface backed by real financial APIs                           |
 
 **Historical local backend suite:** **347 passed, 0 failed, 0 skipped in 136.83 seconds**, using PostgreSQL-backed tests and real Redis integration.
 
-**Latest GitHub Actions backend suite:** **359 passed, 0 failed, 537 warnings in 205.07 seconds**, as shown in the October 19, 2026 pytest CI output. The warnings are reported separately from test failures; their individual causes require separate review.
-
-**Latest reported frontend verification (local):** ESLint and Vite production build passed; **6/6 Playwright browser tests passed** using mocked HTTP responses. Backend transfer tests separately passed **9/9** and authorization-policy tests **39/39** against a dedicated PostgreSQL test database. These are independent runs and must not be added to the historical backend CI count.
+**Historical GitHub Actions backend suite (October 19, 2026):** **359 passed, 0 failed, 537 warnings in 205.07 seconds**, as shown in the pytest CI output. The warnings are reported separately from test failures; their individual causes require separate review.
 
 The reported results apply to tested scenarios; they do not establish exhaustive correctness or production readiness.
 
@@ -168,7 +162,6 @@ Authorized listing GET
            v             v
       Return cached   Query PostgreSQL
       response        and populate Redis
-
 
 
 ```
@@ -357,7 +350,6 @@ WHERE transactions.user_id = :user_id
 ORDER BY transactions.id ASC
 LIMIT :limit OFFSET :skip;
 
-
 ```
 
 The audit evaluated a composite B-tree index:
@@ -365,7 +357,6 @@ The audit evaluated a composite B-tree index:
 ```
 CREATE INDEX CONCURRENTLY
 ON transactions (user_id, id);
-
 
 ```
 
@@ -411,26 +402,169 @@ The audit also identified four redundant non-unique indexes. They were not remov
 
 ---
 
+## Case Study: Snapshot-Bound Evidence Validation
+
+### Engineering Problem and Invariant
+
+Syntactically valid structured output is not necessarily trustworthy. An analysis result can parse correctly while naming a metric that does not match its referenced fact, citing evidence from a different fact, or using evidence from another financial snapshot.
+
+FastAPI remains the authority for financial calculations and ownership. It builds Financial Context v2 from the authenticated owner's fresh projection, including a generation-bound snapshot ID, typed facts, evidence IDs, and freshness metadata. Go validates the supplied context and constrains output to references into that exact context; it does not query or write the financial database.
+
+The invariant is: **every returned finding resolves to an available fact and evidence record belonging to the same trusted snapshot.**
+
+### Design Risk and Validation Boundary
+
+Go rejects unsupported context and output versions, stale or internally inconsistent context, invalid metric facts, malformed identifiers, and evidence records that do not match their snapshot and fact. Model output is limited to 8 KiB and decoded with duplicate-key, unknown-field, and trailing-value rejection. Each finding must match its fact's metric, cite evidence for that fact in the same snapshot, and use a claim code allowed by the fact's availability. An empty findings array is valid.
+
+This is a preventive engineering design supported by tests, not a production incident. Structural validation proves reference consistency with the trusted input; it does not prove that the input itself came from FastAPI or that an interpretation is semantically correct. The Go handler explicitly assumes trusted context provenance. FastAPI's authentication, owner scoping, and freshness checks remain essential to that boundary.
+
+### Verification Evidence
+
+Focused Go tests cover accepted empty output; deterministic, snapshot-bound fact and evidence IDs; unsupported versions; snapshot, fact, evidence, and metric mismatches; duplicate keys; unknown fields; trailing JSON; output size limits; claim-code availability; and duplicate findings. Separate tests cover deterministic result rendering and prevention of trusted-context mutation by the provider implementation.
+
+**Implementation and test references:**
+
+- [backend/app/analysis_context.py](backend/app/analysis_context.py)
+- [backend/app/routers/analytics.py](backend/app/routers/analytics.py)
+- [ai-service/internal/analysis/analysis.go](ai-service/internal/analysis/analysis.go)
+- [ai-service/internal/analysis/model_output.schema.json](ai-service/internal/analysis/model_output.schema.json)
+- [ai-service/internal/analysis/analysis_test.go](ai-service/internal/analysis/analysis_test.go)
+
+### Trade-offs and Generalizable Lesson
+
+Go emits typed claim references, while result descriptions and numeric values are rendered deterministically from FastAPI's context. This sacrifices open-ended model prose in exchange for a narrow, testable output boundary. Validation can reject unsupported references and prevent model-supplied numbers from becoming authoritative facts; it cannot certify the upstream projection or every semantic interpretation.
+
+---
+
+## Case Study: Bounded Provider Concurrency and Cancellation
+
+### Engineering Problem and Invariant
+
+External analysis providers can be slow, fail, or ignore cancellation. Letting every incoming request create provider work would make resource use grow with request volume. A queue would also make overload latency and cancellation less predictable.
+
+The Go service admits at most ten provider calls per process. Admission is nonblocking: a request that finds all slots occupied receives a sanitized 503 instead of waiting in an unbounded queue.
+
+### Request and Provider Lifecycle
+
+The incoming request body is bounded separately from the 8 KiB model-output limit. After strict input validation, analysis has an eight-second deadline and the provider call a seven-second timeout. Request cancellation propagates through the provider interface's context.Context.
+
+A provider slot is released only after Explain returns, including error and panic unwinding. A provider that ignores its context cannot be forcibly stopped; its slot remains occupied while it is still running. The HTTP server handles SIGINT/SIGTERM and drains active requests for a bounded period before force-closing connections.
+
+### Verification Evidence and Limits
+
+Go tests use blocking fakes to verify that ten calls are admitted, the eleventh is rejected promptly, and capacity is released after success, provider error, or panic. Cancellation propagation, timeout behavior, slot retention while a provider remains blocked, concurrent metrics snapshots, and graceful shutdown are also covered.
+
+These tests establish limiter behavior under controlled fakes. They are not a 200-request load test with five-second real-provider latency and do not demonstrate a real LLM provider's cancellation behavior. The limit is per process, so ten slots on each of several replicas means a larger aggregate limit; there is no distributed/global limiter. Metrics are in-memory snapshots used by tests, not an externally exported monitoring endpoint.
+
+**Implementation and test references:**
+
+- [ai-service/internal/analysis/analysis.go](ai-service/internal/analysis/analysis.go)
+- [ai-service/internal/analysis/analysis_test.go](ai-service/internal/analysis/analysis_test.go)
+- [ai-service/cmd/server/main.go](ai-service/cmd/server/main.go)
+- [ai-service/cmd/server/main_test.go](ai-service/cmd/server/main_test.go)
+
+### Generalizable Lesson
+
+Bound the lifetime of actual work, not only the lifetime of its HTTP request. Cancellation should reach the provider, while capacity should remain accounted for until provider work has truly ended.
+
+---
+
+## Case Study: From Integration Drift to Reproducible E2E
+
+### Engineering Problem and Invariant
+
+FastAPI, Go, PostgreSQL, Keycloak, Kong, and the React/Vite browser flow were developed and integrated before there was one isolated, reproducible full-system verification path. The invariant for the live test became: **a browser result is meaningful only if each hop uses the intended identity, API image, database, network, and financial snapshot.**
+
+### Observed Failures and Systemic Diagnosis
+
+The local integration history exposed several distinct mismatches:
+
+- Live Keycloak issuer, redirect/PKCE and audience settings, and its active RS256 signing key did not initially match the local browser and Kong configuration. Login could not complete until the runtime client and Kong public-key credential matched live discovery/JWKS data.
+- An existing FastAPI image expected a different Alembic revision from the intended database. Readiness reported the mismatch; a source-matched image reported the database's actual head.
+- Kong returned 503 while the API DNS alias was unavailable during startup. Its logs showed name-resolution failures; starting Kong after API readiness resolved the observed failure. DNS negative caching is a plausible contributor, not a proven internal Kong cause.
+- Early runs depended on pre-existing PostgreSQL port and Docker-network configuration. The initial port 5433 publication failed, while a WSL PostgreSQL listener on 5432 made an implicit localhost URL unsafe. The final automation uses a private PostgreSQL service inside its own Compose project rather than relying on either host binding.
+- Early runner attempts exposed assumptions in JWKS hostname comparison, Docker build context, migration revision parsing, and the seed script's Python import path. These were runner defects, not financial-domain failures.
+- pg_isready alone was insufficient to prove that the specific test database could be opened. The runner now waits for SELECT current_database(), current_user, verifies both values, and confirms the new database has no application tables before migration.
+- Alembic revision parsing also needed to avoid accepting a revision as a partial match at a hyphen boundary. The validator now compares complete revision tokens; a regression case checks that abc does not satisfy a source head of abc-def. This was a false-positive risk in the matcher; the evidence does not show that an incorrect revision was actually accepted during a live run.
+
+The common contributors were configuration drift between independently started components, stale deployment artifacts, readiness checks that proved process availability rather than dependency identity, and assumptions about inherited local state. The image/schema mismatch and runner errors are directly confirmed. The precise mechanism behind Kong DNS caching and the original port-5433 Docker Desktop failure was not established.
+
+### Engineering Solution
+
+The final runner creates a unique Compose project and disposable PostgreSQL database and volume for each invocation. It refuses protected or unscoped database names, verifies the effective FastAPI/Alembic URL, confirms database identity and emptiness, and checks the Alembic head. It builds API and Go images without cache from the current source.
+
+The runner generates runtime-only credentials and Keycloak client configuration for the selected loopback origin. It checks the live issuer, PKCE S256, redirect URI, audience, and JWKS, then derives a Kong RS256 public-key credential from the active JWKS. It starts Go and FastAPI only after PostgreSQL identity and migration checks, verifies Go health, Keycloak JWKS reachability, and internal DNS against the run's container IPs, and starts Kong only after the upstream API is healthy.
+
+Playwright exercises real Keycloak login and API traffic; it does not mock authentication or financial APIs. The browser scenario checks /auth/me, owner-scoped account and transaction operations, projection freshness, the empty-body Insights request, three deterministic findings with evidence IDs, matching snapshot metadata, logout clearing protected state, and missing/invalid JWT rejection. Cleanup is scoped to the runner's unique Compose project, its disposable volume, and run-specific images.
+
+**Implementation and test references:**
+
+- [gateway/e2e/run_live_e2e.py](gateway/e2e/run_live_e2e.py)
+- [gateway/e2e/compose.live.override.yml](gateway/e2e/compose.live.override.yml)
+- [gateway/e2e/test_run_live_e2e_unit.py](gateway/e2e/test_run_live_e2e_unit.py)
+- [gateway/e2e/README.live.md](gateway/e2e/README.live.md)
+- [frontend/e2e/live-financial-insights.spec.ts](frontend/e2e/live-financial-insights.spec.ts)
+- [ai-service/internal/analysis/analysis.go](ai-service/internal/analysis/analysis.go)
+- [backend/app/routers/analytics.py](backend/app/routers/analytics.py)
+
+### Verification Evidence
+
+Local verification first passed the real browser flow, then focused runner unit tests exposed an Alembic revision-matching bug. After correcting the matcher, the real browser E2E passed again. The focused runner unit suite reported **15 passed**; it exercises database-name and identity guards, Alembic revision matching (including the hyphenated-prefix regression), runtime Keycloak configuration, RS256 key extraction, readiness failure sanitization, and project-scoped cleanup behavior. These unit tests are not full Docker fault injection.
+
+The later CI integration history and completed clean-checkout results are documented in [CI Integration and Regression Findings](#ci-integration-and-regression-findings) and [Automated System E2E on GitHub Actions](#automated-system-e2e-on-github-actions).
+
+### Trade-offs and Limitations
+
+The runner's cleanup uses project-scoped Compose teardown with --volumes, so it deletes the test run's own disposable database volume. Safety depends on its unique project/database checks; this is not a cleanup command for a developer's existing Compose project. The recorded runs used synthetic identities and data and did not touch finance_db, finance_test, or pfp_smoke_test.
+
+The Go service still uses a deterministic development provider. There is no real LLM integration, no production reliability evidence, and no verification here of every hard-termination or infrastructure-failure path. Local working-tree results and committed-source CI results are separate: the CI evidence below applies to the exact PR commit in a clean checkout and does not validate any local uncommitted changes.
+
+### CI Integration and Regression Findings
+
+The integration work exposed source and commit consistency problems as well as application integration defects:
+
+1. A local real browser E2E run passed through Keycloak, Kong, FastAPI, PostgreSQL, and the Go deterministic provider.
+2. Focused runner unit tests passed and exposed the Alembic revision-matching bug at a hyphen boundary.
+3. The real browser E2E passed again after the Alembic correction.
+4. An early GitHub Actions run failed because the runner unit-test file was absent from the pushed commit; the local working tree and that commit did not contain the same files ([run](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/actions/runs/45692600015)).
+5. Backend CI then encountered an import mismatch: analytics tests imported lifecycle functions that were not present in the committed `app.main` ([run](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/actions/runs/45692955692)).
+6. A later backend CI run reported **368 passed and 15 failed**. The analytics routes returned HTTP 403 because the committed authorization policies were missing ([run](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/actions/runs/45693687363)). Those 15 failures were outcomes of the shared authorization-policy problem, not 15 distinct bugs.
+7. Browser E2E timed out while waiting for **Sign in with Keycloak** because the committed `App.tsx` still rendered the previous Login UI ([run](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/actions/runs/45693687001)).
+8. Local fixes were then verified with **22 targeted backend tests**, **5 frontend auth tests**, and **1 real browser E2E**. These local results are distinct from CI counts.
+9. The final PR-head CI results are recorded below after verification of the actual completed workflow runs.
+
+These events distinguish local working-tree correctness (what passed against local files), Git commit completeness (whether the needed files and fixes were included), CI clean-checkout reproducibility (whether that exact commit passed from a fresh checkout), and application integration correctness (whether the connected components behaved correctly together). The missing test file and uncommitted UI incidents were source-integration failures, not evidence of complex distributed-system race conditions.
+
+### Generalizable Engineering Lesson
+
+End-to-end reliability is a property of the complete runtime contract. Verify identity, schema, network reachability, service health, and data isolation explicitly; do not infer them from a process being up or a mocked request succeeding.
+
+---
+
 ## System Structure
 
-Personal Finance Platform is implemented as a **modular monolith**.
+The **FastAPI Financial Core** follows a modular-monolith design.
 
 The architecture keeps financial business rules, transaction boundaries, and authoritative state explicit without introducing distributed infrastructure unnecessary for the project's current scope. The SSE activity feed remains part of the modular monolith, with process-local shared polling rather than a distributed message broker.
 
-Kong Gateway and Keycloak are optional external integration components, not independently deployed financial business services.
+The integrated PFP environment also runs the Go AI Analysis Service, React frontend, Keycloak, and Kong as separate components; these are not modules inside the Financial Core. Keycloak and Kong are optional when running the Financial Core standalone, and participate in the integrated authentication and gateway flow when enabled.
 
 ### Component Responsibilities
 
-| **Component**             | **Responsibility**                                                       |
-| ------------------------- | ------------------------------------------------------------------------ |
-| FastAPI routers           | HTTP handling, authentication dependencies, validation, responses        |
-| Business services         | Financial operations, invariants, causal rules, transaction coordination |
-| Canonical financial state | Authoritative events, entries, and relationships                         |
-| Financial history         | Persistent historical evidence of state changes                          |
-| Provider integration      | Ingestion, normalization, reconciliation                                 |
-| Derived projections       | Rebuildable balances and summaries                                       |
-| Operational mechanisms    | Idempotency, readiness, migrations, auditing, recovery                   |
-| Activity delivery         | PostgreSQL activity feed, SSE replay, shared process-local subscribers   |
+| **Component**             | **Responsibility**                                                                  |
+| ------------------------- | ----------------------------------------------------------------------------------- |
+| FastAPI Financial Core    | Owns financial correctness, authenticated user ownership, validation, and operations |
+| PostgreSQL                | Stores authoritative financial state and persistent history                         |
+| Go AI Analysis Service    | Consumes trusted Financial Context v2; validates output references; does not own financial facts |
+| React/TypeScript frontend | Handles browser interaction and calls the platform APIs                             |
+| Keycloak                  | Authenticates users in the integrated OIDC flow                                     |
+| Kong                      | Routes API traffic and verifies JWTs in the relevant integration mode              |
+| FastAPI routers           | HTTP handling, authentication dependencies, validation, responses                  |
+| Business services         | Financial operations, invariants, causal rules, transaction coordination            |
+| Provider integration      | Ingestion, normalization, reconciliation                                              |
+| Derived projections       | Rebuildable balances and summaries                                                  |
+| Operational mechanisms    | Idempotency, readiness, migrations, auditing, recovery                               |
+| Activity delivery         | PostgreSQL activity feed, SSE replay, shared process-local subscribers               |
 
 ### Financial State Flow
 
@@ -464,7 +598,6 @@ External Provider Evidence      Client Financial Commands
                    v             v
               Append-only    Rebuildable
                 History      Projections
-
 
 
 ```
@@ -585,24 +718,21 @@ Database-sensitive scenarios use PostgreSQL. Optional cache tests include real R
 
 ### Local Test Results
 
-| **Verification**                                   | **Reported result**                    |
-| -------------------------------------------------- | -------------------------------------- |
-| Backend test suite (historical local)              | **347 passed, 0 failed, 0 skipped**    |
-| Kong authorization integration suite               | **8 passed**                           |
-| Gateway full-stack E2E                             | **2 passed**                           |
-| Gateway Lab static configuration tests             | **2 passed**                           |
-| Targeted backend authorization/security/OIDC tests | **71 passed**                          |
-| Native-async correction experiment                 | **5 passed**                           |
-| Backend CI (October 19; latest shown)              | **359 passed, 0 failed; 537 warnings** |
-| Frontend Playwright (reported local, mocked APIs)   | **6 passed**                          |
-| Targeted transfer tests (dedicated PostgreSQL DB)   | **9 passed**                          |
-| Targeted authorization-policy tests (PostgreSQL DB) | **39 passed**                         |
+| **Verification**                                   | **Reported result**                 |
+| -------------------------------------------------- | ----------------------------------- |
+| Backend test suite (historical local)             | **347 passed, 0 failed, 0 skipped** |
+| Kong authorization integration suite               | **8 passed**                        |
+| Gateway full-stack E2E                             | **2 passed**                        |
+| Gateway Lab static configuration tests             | **2 passed**                        |
+| Targeted backend authorization/security/OIDC tests | **71 passed**                       |
+| Native-async correction experiment                 | **5 passed**                        |
+| Backend CI (October 19; historical)                | **359 passed, 0 failed; 537 warnings** |
 
 These are **separate test runs**. Their counts must not be summed into a single suite result.
 
-The historical full backend result was obtained locally in 136.83 seconds using PostgreSQL-backed tests and real Redis. The newer **359 passed** figure comes from the October 19 GitHub Actions pytest output, not this historical local run.
+The historical full backend result was obtained locally in 136.83 seconds using PostgreSQL-backed tests and real Redis. The **359 passed** figure comes from the October 19 GitHub Actions pytest output, not this historical local run.
 
-**Latest shown Backend CI pytest result (October 19, 2026): 359 passed, 0 failed, 537 warnings in 205.07 seconds.** The warning total is not a failure count; the screenshot does not establish whether all warnings have the same underlying cause.
+**Historical Backend CI pytest result (October 19, 2026): 359 passed, 0 failed, 537 warnings in 205.07 seconds.** The warning total is not a failure count; the screenshot does not establish whether all warnings have the same underlying cause.
 
 ### Gateway Verification
 
@@ -645,6 +775,21 @@ The E2E suite verifies authenticated reads, a denied write without database muta
 
 These results are not evidence of exhaustive security correctness or production readiness.
 
+### Automated System E2E on GitHub Actions
+
+PR #17, [“ci: add automated full-system E2E verification”](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/pull/17), was merged. The following **completed pull-request runs** all checked out PR head `47dc6e2996be587fd9083c06d1a57701e46c0468` (short SHA `47dc6e2`):
+
+| **Workflow** | **Verified result** |
+| ------------ | ------------------- |
+| [Backend CI](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/actions/runs/45695988126) | **383 passed, 559 warnings** in the full backend regression suite. A separate Redis integration selection in the same workflow reported **17 passed**. |
+| [Gateway Full-Stack E2E](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/actions/runs/45695988145) | Workflow completed successfully. |
+| [Kong Authorization Integration Tests](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/actions/runs/45695988067) | **8 passed**; Docker cleanup verification reported PASS. |
+| [System Browser E2E](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/actions/runs/45695988097) | On a GitHub-hosted `ubuntu-24.04` runner, **15 runner unit tests passed**, the real Playwright browser E2E reported **1 passed**, and the step that runs E2E and verifies cleanup completed successfully. |
+
+These test counts belong to separate selections and are not added together. The System Browser E2E used a disposable Compose project and database, ran the real Keycloak-to-Kong-to-FastAPI-to-Go browser flow, and verified cleanup. It does not establish real LLM behavior, production reliability, or coverage of every failure mode.
+
+The successful rows above are PR-head results, not a claim that every workflow passed on merge commit `17900898f099b2b267b241d5de61322667317fc7`. At review time, the post-merge [Gateway Full-Stack E2E](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/actions/runs/45696767134) and [Kong Authorization Integration](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/actions/runs/45696767131) runs had passed, [Backend CI](https://github.com/duyhunga1k45pbc-cloud/personal-finance-platform/actions/runs/45696767154) was still in progress, and no System Browser E2E run for the merge SHA was present in the inspected run list. No complete merged-commit CI pass is claimed.
+
 ---
 
 ## Additional Verification
@@ -683,61 +828,6 @@ There has been no production-traffic, availability, or real incident-response va
 
 ---
 
-## React Fullstack Application
-
-The `frontend/` directory contains a **React + TypeScript + Vite** application using **TanStack Query** for server-state synchronization. It consumes the FastAPI REST APIs rather than duplicating authoritative financial state in the browser.
-
-Implemented application workflows include:
-
-- Login followed by authenticated `GET /auth/me` identity verification; in-memory authentication state and logout cleanup.
-- Account listings, dashboard/summary views, financial activity history, and transaction creation forms.
-- Account-to-account transfers through `POST /transfers`, with an explicit `Idempotency-Key` header and a stable command payload.
-- Financial-event and account data refresh after confirmed operations.
-- Activity updates through the backend's existing SSE endpoint.
-
-The React application is **distinct from Moneta** (`GET /demo`), the earlier read-only HTML/JavaScript presentation interface documented below. The modular-monolith backend remains the authority for accounting rules, persistence, and resource authorization.
-
-### Browser Transfer Recovery
-
-A network failure after a financial transfer has committed creates an ambiguous outcome: the browser cannot infer from a missing response whether a transfer succeeded.
-
-The React transfer form therefore records a single pending transfer command in browser `sessionStorage` **before** sending it. A retry reuses the original idempotency key and unchanged payload, instead of manufacturing a new financial command. After a page reload, the user must authenticate again; recovery is made available only under the verified owner identity. Pending transfer state is isolated by user ID in the current browser session.
-
-A confirmed successful response clears the stored pending command. Transport failures and otherwise ambiguous outcomes retain it for retry. This client-side behavior complements, but does not replace, the backend's transactional idempotency enforcement.
-
-**Scope boundaries:** Recovery currently supports one pending transfer per user per browser-tab session. `sessionStorage` is not durable across all browser or device failures and does not coordinate separate tabs or devices. Transaction creation does not have the same persisted recovery contract. The implementation is not an offline payment queue or a production-grade cross-device transaction manager.
-
-**Implementation references:**
-
-- `frontend/src/App.tsx`
-- `frontend/src/auth/session.ts`
-- `frontend/src/features/transfers/TransferForm.tsx`
-- `frontend/src/features/transactions/CreateTransactionForm.tsx`
-- `frontend/src/api/transferCommands.ts`
-
-### Browser Recovery and Playwright Verification
-
-The reported local browser verification completed **6/6 Playwright tests**, with ESLint and the Vite/TypeScript production build passing. The scenarios include:
-
-- Login failures, authenticated identity lookup, and logout/session behavior.
-- An aborted transfer response followed by retry with the **same idempotency key and serialized request body**.
-- Reload and reauthentication followed by same-command transfer recovery.
-- Cross-user isolation: a different signed-in user cannot recover the previous user's pending transfer; the original user can recover it after signing back in.
-
-These Playwright tests **mock HTTP/API outcomes**. They validate browser behavior but do not independently prove PostgreSQL state after a real lost response. Separately reported dedicated-database backend runs passed **9/9 transfer tests** and **39/39 authorization-policy tests**. A combined, real-stack browser-to-database lost-response test has not been verified. Frontend CI status should not be inferred from these local results.
-
-**Test references:**
-
-- `frontend/e2e/auth.spec.ts`
-- `frontend/e2e/transfer-recovery.spec.ts`
-- `frontend/e2e/transfer-reload.spec.ts`
-- `frontend/e2e/transfer-cross-user.spec.ts`
-- `frontend/playwright.config.ts`
-- `backend/tests/test_transfers.py`
-- `backend/tests/test_authorization_policy.py`
-
----
-
 ## Moneta Demo UI
 
 Moneta is a lightweight **HTML/CSS/JavaScript interface** served by FastAPI at `GET /demo`.
@@ -770,21 +860,21 @@ The UI does not initiate financial writes in v1.
 
 ## Technology Stack
 
-| **Layer**           | **Technology**                                     |
-| ------------------- | -------------------------------------------------- |
-| Language            | Python                                             |
-| API framework       | FastAPI, Pydantic                                  |
-| ORM                 | SQLAlchemy (sync Financial Core; async SSE reader) |
-| Primary database    | PostgreSQL                                         |
-| Migrations          | Alembic                                            |
-| Optional cache      | Redis                                              |
-| Gateway experiment  | Kong                                               |
-| Identity experiment | Keycloak                                           |
-| Tests               | pytest, Playwright                                 |
-| React client        | React, TypeScript, Vite, TanStack Query           |
-| Demo UI             | HTML, CSS, JavaScript                              |
+| **Layer**                         | **Technology**                                      |
+| --------------------------------- | --------------------------------------------------- |
+| Financial Core                    | Python, FastAPI, Pydantic                           |
+| AI Analysis Service               | Go                                                  |
+| ORM and migrations                | SQLAlchemy, Alembic                                 |
+| Authoritative database            | PostgreSQL                                          |
+| Optional cache                    | Redis                                               |
+| Frontend                          | React, TypeScript, Vite                             |
+| Authentication and API gateway    | Keycloak, Kong                                      |
+| Tests                             | pytest, Go testing, Playwright                      |
+| Local orchestration and CI         | Docker Compose, GitHub Actions                      |
 
 Financial services primarily use synchronous SQLAlchemy. The SSE activity reader uses SQLAlchemy async; separate native-async experiments do not constitute a full Financial Core rewrite.
+
+Redis caching and the Keycloak/Kong integrations are optional infrastructure around the Financial Core; they are not components of its financial domain or authoritative datastore.
 
 ---
 
@@ -798,6 +888,18 @@ Redis is optional at runtime and required for cache integration tests.
 
 Use separate development and disposable test databases. Some tests require database-creation or failure-injection privileges.
 
+### Run the Full-System Browser E2E
+
+The real React → Keycloak → Kong → FastAPI → PostgreSQL → Go flow requires Python 3.10+, Docker Engine with the Compose plugin, and Node.js/npm with the frontend dependencies and Playwright Chromium installed. See the [live E2E guide](gateway/e2e/README.live.md) for clean-checkout setup and isolation details.
+
+From the repository root, run:
+
+```bash
+python3 gateway/e2e/run_live_e2e.py
+```
+
+The runner provisions a unique disposable Compose project, database, and volume, then removes only those run-specific resources. It verifies database identity and isolation; do not configure or adapt it to target protected development databases or existing application data.
+
 ### Install Dependencies
 
 From the `backend` directory:
@@ -805,7 +907,6 @@ From the `backend` directory:
 ```
 pip install -r requirements.txt
 pip install -r requirements-test.txt
-
 
 ```
 
@@ -818,7 +919,6 @@ Example:
 ```
 export DATABASE_URL="postgresql://USER:PASSWORD@localhost:5432/finance_dev_db"
 
-
 ```
 
 Use a separate disposable database for tests.
@@ -827,7 +927,6 @@ Use a separate disposable database for tests.
 
 ```
 alembic upgrade head
-
 
 ```
 
@@ -843,7 +942,6 @@ From the `backend` directory:
 export DATABASE_URL="postgresql://USER:PASSWORD@localhost:5432/finance_test_db"
 python -m pytest -q
 
-
 ```
 
 For Redis integration tests, use a dedicated disposable Redis database:
@@ -853,7 +951,6 @@ export REDIS_TEST_URL="redis://127.0.0.1:6379/15"
 export REQUIRE_REDIS_TESTS=1
 
 python -m pytest -q tests/test_redis_fault_injection_correctness.py
-
 
 ```
 
@@ -865,7 +962,6 @@ Redis test fixtures may flush the configured test database.
 
 ```
 uvicorn app.main:app --reload --port 8765
-
 
 ```
 
@@ -885,29 +981,6 @@ Visit:
 - Moneta: `http://127.0.0.1:8765/demo`
 - Swagger: `http://127.0.0.1:8765/docs`
 
-### Run React Frontend
-
-In a separate terminal, from the repository root:
-
-```bash
-cd frontend
-npm ci
-npm run dev
-```
-
-The Vite development server runs on `http://127.0.0.1:5173` by default, with requests under `/api` proxied to the backend configured in `frontend/vite.config.ts`. **Check the proxy target and the FastAPI listening port before starting.** The standalone FastAPI example above uses port `8765`; if the Vite proxy targets port `8000`, either start FastAPI on that port or update the development proxy configuration.
-
-To validate the frontend:
-
-```bash
-cd frontend
-npm run lint
-npm run build
-npx playwright test --reporter=list
-```
-
-Playwright requires its browser dependencies (for example, `npx playwright install chromium`) and a running frontend server unless `frontend/playwright.config.ts` has a `webServer` command configured. The browser suite uses mocked API responses and does not require a live financial database.
-
 ### Optional Kong Gateway Labs
 
 The two Gateway Labs use different Compose files.
@@ -917,14 +990,12 @@ The two Gateway Labs use different Compose files.
 ```
 docker compose -f gateway/compose.http.yml up -d --build
 
-
 ```
 
 **External Authorization Lab**
 
 ```
 docker compose -f gateway/compose.internal.yml up -d --build
-
 
 ```
 
@@ -966,9 +1037,6 @@ The current work does not establish:
 - Pagination for extremely large provider transaction histories.
 - Performance improvements for every PostgreSQL workload.
 - Complete financial write and reconciliation workflows through Moneta.
-- Durable cross-tab, cross-device, or multi-command browser transfer recovery.
-- Real-stack browser-level proof of committed-transfer recovery after an actual lost HTTP response.
-- Production frontend deployment or confirmed frontend CI execution.
 
 Some guarantees depend on application write paths consistently following the shared locking and transaction conventions.
 
@@ -978,4 +1046,4 @@ The repository emphasizes **implemented behavior, reproducible tests, engineerin
 
 In particular, surviving selected Redis failure scenarios does not prove that Redis can never contribute to a financial correctness defect.
 
-**Development disclosure:** GitHub Copilot assisted with portions of implementation, test creation, and documentation.
+**Development disclosure:** AI coding assistants, including GitHub Copilot, assisted with portions of implementation, test creation, and documentation.
